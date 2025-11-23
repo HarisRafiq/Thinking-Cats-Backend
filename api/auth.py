@@ -9,7 +9,9 @@ import jwt
 from modular_agent.database import DatabaseManager
 
 # Configuration
-SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    raise ValueError("SECRET_KEY environment variable is required")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
