@@ -18,8 +18,7 @@ if [ ! -f .env ]; then
         echo "❌ Exiting. Please configure .env and run again."
         exit 1
     else
-        echo "❌ No .env.example file found!"
-        exit 1
+        echo "⚠️  No .env.example file found. Assuming environment variables are set externally."
     fi
 fi
 
