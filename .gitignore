@@ -5,7 +5,6 @@ __pycache__/
 
 # Virtual-env / env files
 .env
-.env*
 venv/
 
 # IDE / editor artefacts
