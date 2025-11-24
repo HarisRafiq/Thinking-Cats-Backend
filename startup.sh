@@ -9,19 +9,7 @@ cd "$(dirname "$0")"
 
 echo "🚀 Starting Thinking Cats Server..."
 
-# Check if .env file exists
-if [ ! -f .env ]; then
-    echo "⚠️  No .env file found. Creating from .env.example..."
-    if [ -f .env.example ]; then
-        cp .env.example .env
-        echo "✅ Created .env file. Please edit it with your configuration."
-        echo "❌ Exiting. Please configure .env and run again."
-        exit 1
-    else
-        echo "⚠️  No .env.example file found. Assuming environment variables are set externally."
-    fi
-fi
-
+ 
 # Check if virtual environment exists
 if [ ! -d "venv" ]; then
     echo "📦 Creating virtual environment..."
@@ -37,12 +25,7 @@ echo "📥 Installing dependencies..."
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# Load environment variables
-echo "🔧 Loading environment variables..."
-set -a
-source .env
-set +a
-
+ 
 echo "✅ Setup complete!"
 echo ""
 echo "🌐 Starting server on ${HOST:-0.0.0.0}:${PORT:-8001}..."
