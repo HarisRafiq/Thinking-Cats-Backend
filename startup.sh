@@ -37,11 +37,7 @@ echo "📥 Installing dependencies..."
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# Load environment variables
-echo "🔧 Loading environment variables..."
-set -a
-source .env
-set +a
+
 
 echo "✅ Setup complete!"
 echo ""
