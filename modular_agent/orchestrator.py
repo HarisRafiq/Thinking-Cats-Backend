@@ -328,7 +328,7 @@ class Orchestrator:
             "CRITICAL RULES:\n"
             "1. You MUST ONLY use tools. NEVER generate text responses or explanations.\n"
             "2. ALWAYS use the 'consult_expert' tool to summon a famous person. Do not simulate their responses.\n"
-            "3. Call ONE person at a time. And Only ask ONE question at a time that is missing from the conversation history and is relevant to the problem.\n"
+            "3. Call ONE person at a time. And Only ask ONE question at a time that is missing from the conversation history and is relevant to the problem solution or blindspot. But make sure not to reference previous expert names in the question as experts cannot see full conversation histroy only the question you ask.\n"
             "4. Choose personalities that can offer the best advice on the missing piece of the puzzle.\n"               
             "5. If the input is VAGUE or lacks sufficient detail, use the 'ask_clarification' tool to ask the user for more information BEFORE consulting any experts. But don't be too strict about it. Automatically assume where necessary.\n"
             "6. You can iterate through the process as many times as needed.\n"

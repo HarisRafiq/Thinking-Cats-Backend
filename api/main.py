@@ -411,6 +411,19 @@ async def send_message(session_id: str, request: MessageRequest, current_user: D
         "timestamp": asyncio.get_event_loop().time()
     })
     
+    # Emit immediate acknowledgment event
+    import time
+    message_received_event = {
+        "type": "message_received",
+        "message": request.message,
+        "timestamp": time.time()
+    }
+    try:
+        sessions[session_id]['output_queue'].put_nowait(message_received_event)
+    except asyncio.QueueFull:
+        # Queue is full, but this is just an acknowledgment so it's okay to drop
+        pass
+    
     return {"status": "queued"}
 
 @app.get("/stream/{session_id}")
