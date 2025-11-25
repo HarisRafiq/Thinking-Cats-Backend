@@ -33,6 +33,8 @@ async def test_context_restoration():
     )
     
     # Simulate solving a problem
+    # Note: We must manually add the initial message to DB as main.py does
+    await db_manager.add_message(session_id, {"role": "user", "content": problem})
     await orchestrator1.process(problem)
 
     
@@ -110,7 +112,7 @@ async def test_context_restoration():
     # Note: The exact number depends on how many steps the orchestrator took.
     # But we should definitely see the "Problem: ..." message and "Are you sure?" message.
     
-    has_problem = any("Problem: What is 2 + 2?" in m.get('content', '') for m in context_messages if m.get('role') == 'user')
+    has_problem = any("What is 2 + 2?" in m.get('content', '') for m in context_messages if m.get('role') == 'user')
     has_followup = any("Are you sure?" in m.get('content', '') for m in context_messages if m.get('role') == 'user')
     
     if has_problem:

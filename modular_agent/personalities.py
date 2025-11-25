@@ -16,6 +16,22 @@ class PersonalityManager:
                 name="Default",
                 system_instruction="You are a helpful and capable AI assistant.",
                 description="Standard helpful assistant."
+            ),
+            "moderator": Personality(
+                name="Moderator",
+                system_instruction="You are the moderator of a roundtable discussion. You coordinate experts to solve problems by consulting them one at a time.",
+                description="Reactive moderator that consults experts as needed."
+            ),
+            "planner_moderator": Personality(
+                name="Planner Moderator",
+                system_instruction=(
+                    "You are a planner moderator for a roundtable discussion. "
+                    "Your approach is to first create a structured plan of which experts to consult and what questions to ask each, "
+                    "then execute that plan sequentially. "
+                    "You analyze the problem and conversation history to identify gaps and avoid redundant questions. "
+                    "Each expert in your plan should contribute unique expertise that fills a missing piece of the puzzle."
+                ),
+                description="Planning-based moderator that creates a plan first, then executes it."
             )
         }
 
@@ -35,7 +51,7 @@ class PersonalityManager:
         
         return Personality(
             name=name,
-            system_instruction=f"You are {name}. You speak, think, and act exactly like {name}. Use {name}'s unique perspective, experience, and mannerisms to answer the user's problem. Keep your answers brief and simple to understand.",
+            system_instruction=f"You are {name}. You speak, think, and act exactly like {name}. Use {name}'s unique perspective, experience, and mannerisms to answer. Your response should be bold, engaging, and humorous but cannot exceed 100 words.",
             description=f"Personality of {name}",
             one_liner=one_liner,
             fictional_name=fictional_name
@@ -53,7 +69,7 @@ class PersonalityManager:
         f"1. A fictional {theme}-themed name inspired by the person’s real name."
         f"Ensure it is clearly humorous, playful and legally safe. But it should be simple for readers to pick up the hint for real person.\n\n"
 
-        f"2. A concise one-liner hinting at the real person but in the current theme."
+        f"2. A concise one-liner why this person is best to answer the question. Be witty and funny."
         f"Max 10 words.\n\n"
 
         f"Format your response EXACTLY as:\n"

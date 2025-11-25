@@ -85,14 +85,66 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> Dict[str, Any
         
     return user
 
+async def activate_session(session_id: str, session_data: Dict[str, Any]) -> None:
+    """
+    Activate a session by creating queues and starting the orchestrator worker.
+    Used for resuming sessions that exist in DB but not in memory.
+    """
+    if session_id in sessions:
+        # Already active
+        return
+    
+    print(f"Activating session {session_id}...")
+    
+    # Create queues for the session
+    output_queue = asyncio.Queue(maxsize=1000)
+    input_queue = asyncio.Queue(maxsize=100)
+    
+    sessions[session_id] = {
+        "output_queue": output_queue,
+        "input_queue": input_queue,
+        "task": None
+    }
+    
+    # Start the orchestrator worker (without initial problem since we're resuming)
+    task = asyncio.create_task(
+        orchestrator_worker(
+            session_id, 
+            problem=None,  # No initial problem when resuming
+            model=session_data.get("model", DEFAULT_MODEL), 
+            input_queue=input_queue, 
+            output_queue=output_queue
+        )
+    )
+    
+    sessions[session_id]["task"] = task
+    print(f"Session {session_id} activated successfully")
+
 async def orchestrator_worker(session_id: str, problem: Optional[str], model: str, input_queue: asyncio.Queue, output_queue: asyncio.Queue):
     """
     Async worker function that loops to process incoming tasks (solve or chat).
     """
     
     async def callback(event_data: Dict[str, Any]):
-        """Put event into async queue."""
-        await output_queue.put(event_data)
+        """Put event into async queue with backpressure handling."""
+        try:
+            # Try to put event immediately (non-blocking if queue has space)
+            output_queue.put_nowait(event_data)
+        except asyncio.QueueFull:
+            # Queue is full - drop oldest event and add new one (backpressure handling)
+            try:
+                # Remove oldest event
+                output_queue.get_nowait()
+                # Add new event
+                output_queue.put_nowait(event_data)
+                print(f"[Session {session_id}] Queue full, dropped oldest event")
+            except asyncio.QueueEmpty:
+                # Queue was emptied between checks, try again
+                try:
+                    output_queue.put_nowait(event_data)
+                except asyncio.QueueFull:
+                    # Still full, log and skip this event
+                    print(f"[Session {session_id}] Queue persistently full, dropping event: {event_data.get('type')}")
 
     try:
         orchestrator = Orchestrator(
@@ -157,31 +209,130 @@ def shutdown_event():
 
 @app.post("/auth/google", response_model=Token)
 async def login_google(request: AuthRequest):
+    # Validate request
+    if not request.token:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Google authentication token is required",
+                "code": "MISSING_TOKEN"
+            }
+        )
+    
     # Verify Google Token
-    google_user = verify_google_token(request.token)
-    if not google_user:
-        raise HTTPException(status_code=400, detail="Invalid Google Token")
+    try:
+        google_user = verify_google_token(request.token)
+        if not google_user:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Invalid or expired Google authentication token",
+                    "code": "INVALID_GOOGLE_TOKEN"
+                }
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Unexpected error during Google token verification: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Error verifying Google token",
+                "code": "TOKEN_VERIFICATION_ERROR"
+            }
+        )
+    
+    # Validate required user data
+    if not google_user.get("email"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Google token missing required user information",
+                "code": "INCOMPLETE_USER_DATA"
+            }
+        )
     
     # Create or update user in DB
-    user_data = {
-        "email": google_user["email"],
-        "name": google_user.get("name"),
-        "picture": google_user.get("picture"),
-        "google_id": google_user["sub"]
-    }
-    
-    user_id = await db_manager.create_user(user_data)
+    try:
+        user_data = {
+            "email": google_user["email"],
+            "name": google_user.get("name"),
+            "picture": google_user.get("picture"),
+            "google_id": google_user["sub"]
+        }
+        
+        user_id = await db_manager.create_user(user_data)
+        if not user_id:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "message": "Failed to create user account",
+                    "code": "USER_CREATION_FAILED"
+                }
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Database error while creating user: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Database error while creating user account",
+                "code": "DATABASE_ERROR"
+            }
+        )
     
     # Create JWT
-    access_token_expires = timedelta(minutes=60 * 24 * 7) # 7 days
-    access_token = create_access_token(
-        data={"sub": user_id}, expires_delta=access_token_expires
-    )
+    try:
+        access_token_expires = timedelta(minutes=60 * 24 * 7) # 7 days
+        access_token = create_access_token(
+            data={"sub": user_id}, expires_delta=access_token_expires
+        )
+        if not access_token:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "message": "Failed to create access token",
+                    "code": "TOKEN_CREATION_FAILED"
+                }
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating access token: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Error creating access token",
+                "code": "TOKEN_CREATION_ERROR"
+            }
+        )
     
     # Get full user object
-    user = await db_manager.get_user_by_id(user_id)
-    user['id'] = str(user['_id'])
-    del user['_id']
+    try:
+        user = await db_manager.get_user_by_id(user_id)
+        if not user:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "message": "User created but could not be retrieved",
+                    "code": "USER_RETRIEVAL_FAILED"
+                }
+            )
+        
+        user['id'] = str(user['_id'])
+        del user['_id']
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error retrieving user: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Error retrieving user information",
+                "code": "USER_RETRIEVAL_ERROR"
+            }
+        )
     
     return {
         "access_token": access_token, 
@@ -217,9 +368,10 @@ async def start_chat(request: ChatRequest, current_user: Dict[str, Any] = Depend
     # For now, we treat resuming same as starting new but with existing ID
     # The worker will handle loading if we implement it fully
     
-    # Create queues
-    output_queue = asyncio.Queue()
-    input_queue = asyncio.Queue()
+    # Create queues with maxsize to prevent memory issues
+    # maxsize=1000 allows buffering but prevents unbounded growth
+    output_queue = asyncio.Queue(maxsize=1000)
+    input_queue = asyncio.Queue(maxsize=100)
     
     sessions[session_id] = {
         "output_queue": output_queue,
@@ -239,10 +391,19 @@ async def start_chat(request: ChatRequest, current_user: Dict[str, Any] = Depend
 
 @app.post("/chat/{session_id}/message")
 async def send_message(session_id: str, request: MessageRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
+    # Check if session exists in memory
     if session_id not in sessions:
-        # If session is not active, try to resume it implicitly?
-        # For now, require explicit start/resume via /chat
-        raise HTTPException(status_code=404, detail="Session not active. Please reconnect via /chat.")
+        # Check if it exists in database
+        session = await db_manager.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        # Verify ownership
+        if session.get("user_id") != str(current_user["_id"]):
+            raise HTTPException(status_code=403, detail="Not authorized to access this session")
+        
+        # Auto-activate the session
+        await activate_session(session_id, session)
         
     await sessions[session_id]['input_queue'].put({
         "type": "message",
@@ -271,20 +432,24 @@ async def stream_chat(session_id: str, token: str):
     if session.get("user_id") != user_id:
          raise HTTPException(status_code=403, detail="Not authorized")
 
-    if session_id not in sessions:
-         # Try to resume if not active? 
-         # For now, if it's not in memory, we can't stream *live* events, 
-         # but maybe we should allow connecting to hear about *future* events if it gets activated?
-         # Or just error out as before.
-         raise HTTPException(status_code=404, detail="Session not active")
+    # Auto-activate session if it's not in memory
+    await activate_session(session_id, session)
     
     event_queue = sessions[session_id]['output_queue']
     
     async def event_generator():
+        """Optimized event generator with backpressure handling."""
+        dropped_events = 0
         while True:
             try:
-                # Wait for event
-                event = await event_queue.get()
+                # Wait for event with shorter timeout for better responsiveness
+                # Use wait_for to allow periodic health checks
+                try:
+                    event = await asyncio.wait_for(event_queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    # Send heartbeat to keep connection alive
+                    yield {"event": "ping", "data": json.dumps({"type": "heartbeat"})}
+                    continue
                 
                 # Check if this is a done event
                 if event.get("type") == "done":
@@ -293,6 +458,9 @@ async def stream_chat(session_id: str, token: str):
                 
                 event_type = event.get("type", "message")
                 yield {"event": event_type, "data": json.dumps(event)}
+                
+                # Reset dropped events counter on successful send
+                dropped_events = 0
                 
             except asyncio.CancelledError:
                 break

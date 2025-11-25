@@ -114,23 +114,48 @@ class Orchestrator:
                 
                 # Create agent_response slide
                 if self.db_manager and self.session_id:
+                    # Generate temporary ID first for immediate event emission
+                    import uuid
+                    temp_id = str(uuid.uuid4())
+                    
                     slide = {
                         "type": "agent_response",
                         "sender": fictional_name,
                         "content": sanitized_response,
                         "question": self.pending_questions.get(fictional_name, ""),
-                        "oneLiner": one_liner
+                        "oneLiner": one_liner,
+                        "id": temp_id  # Temporary ID, will be updated by background task
                     }
-                    slide_id = await self.db_manager.add_slide(self.session_id, slide)
-                    slide["id"] = slide_id
                     
-                    # Emit slide_added event
+                    # Create slide in DB in background (non-blocking)
+                    async def _create_slide_background():
+                        try:
+                            slide_id = await self.db_manager.add_slide(self.session_id, slide)
+                            # Update slide ID if different from temp (though usually same)
+                            if slide_id != temp_id:
+                                slide["id"] = slide_id
+                        except Exception as e:
+                            if self.verbose:
+                                print(f"[Orchestrator] Error creating slide in DB: {e}")
+                            # Keep temporary ID if DB write fails
+                    
+                    # Start background task for slide creation (fire-and-forget)
+                    asyncio.create_task(_create_slide_background())
+                    
+                    # Emit slide_added event immediately (non-blocking)
                     await self._emit_event({
                         "type": "slide_added",
                         "slide": slide
                     })
                     
                 # Return the REAL name to the orchestrator so it knows who it talked to
+                
+                # Emit thinking event again as we return to orchestrator
+                await self._emit_event({
+                    "type": "orchestrator_thinking",
+                    "label": "Orchestrator is thinking..."
+                })
+
                 return f"[{expert_name}]: {response}"
             except Exception as e:
                 error_msg = f"Error consulting {expert_name}: {str(e)}"
@@ -218,26 +243,45 @@ class Orchestrator:
         if not self.db_manager or not self.session_id:
             return
         
+        # Generate temporary ID first for immediate event emission
+        import uuid
+        temp_id = str(uuid.uuid4())
+        
         slide = {
             "type": "user_message",
-            "content": content
+            "content": content,
+            "id": temp_id  # Temporary ID, will be updated by background task
         }
-        slide_id = await self.db_manager.add_slide(self.session_id, slide)
-        slide["id"] = slide_id
         
-        # Emit slide_added event
+        # Create slide in DB in background (non-blocking)
+        async def _create_slide_background():
+            try:
+                slide_id = await self.db_manager.add_slide(self.session_id, slide)
+                # Update slide ID if different from temp (though usually same)
+                if slide_id != temp_id:
+                    slide["id"] = slide_id
+            except Exception as e:
+                if self.verbose:
+                    print(f"[Orchestrator] Error creating slide in DB: {e}")
+                # Keep temporary ID if DB write fails
+        
+        # Start background task for slide creation (fire-and-forget)
+        asyncio.create_task(_create_slide_background())
+        
+        # Emit slide_added event immediately (non-blocking)
         await self._emit_event({
             "type": "slide_added",
             "slide": slide
         })
 
     async def _emit_event(self, event_data: Dict):
-        """Helper method to emit events, handling null callback."""
+        """Helper method to emit events, handling null callback. Non-blocking DB writes."""
         # Add timestamp if not present
         if "timestamp" not in event_data:
             import time
             event_data["timestamp"] = time.time()
 
+        # Emit event immediately to callback (non-blocking)
         if self.event_callback:
             # Check if callback is async
             if asyncio.iscoroutinefunction(self.event_callback):
@@ -245,9 +289,19 @@ class Orchestrator:
             else:
                 self.event_callback(event_data)
         
-        # Save event to DB if configured
+        # Save event to DB in background task (fire-and-forget pattern)
+        # This prevents blocking the event emission path
         if self.db_manager and self.session_id:
-            await self.db_manager.add_event(self.session_id, event_data)
+            async def _save_event_background():
+                try:
+                    await self.db_manager.add_event(self.session_id, event_data)
+                except Exception as e:
+                    # Log error but don't block event emission
+                    if self.verbose:
+                        print(f"[Orchestrator] Error saving event to DB (non-critical): {e}")
+            
+            # Create background task for DB write
+            asyncio.create_task(_save_event_background())
 
     async def process(self, user_input: str) -> str:
         """
@@ -259,6 +313,12 @@ class Orchestrator:
         
         # Create user_message slide for the input
         await self._create_user_message_slide(user_input)
+
+        # Emit thinking event
+        await self._emit_event({
+            "type": "orchestrator_thinking",
+            "label": "Orchestrator is thinking..."
+        })
         
         # Construct prompt that instructs orchestrator to only use tools, never generate text
         prompt = (

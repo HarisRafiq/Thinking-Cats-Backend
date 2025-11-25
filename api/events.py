@@ -20,13 +20,6 @@ class BaseEvent:
 
 
 @dataclass
-class OrchestratorStartEvent(BaseEvent):
-    """Event emitted when orchestrator starts solving a problem."""
-    problem: str
-    type: str = "orchestrator_start"
-
-
-@dataclass
 class ConsultStartEvent(BaseEvent):
     """Event emitted when orchestrator starts consulting an expert."""
     expert: str  # Real expert name (e.g., "Steve Jobs") - used by backend
@@ -44,27 +37,6 @@ class ConsultEndEvent(BaseEvent):
     response: str
     type: str = "consult_end"
     one_liner: Optional[str] = None  # Include for consistency and easy access
-
-
-@dataclass
-class OrchestratorThinkingEvent(BaseEvent):
-    """Event emitted when orchestrator is processing user input."""
-    type: str = "orchestrator_thinking"
-    message: str = "Processing user input..."
-
-
-@dataclass
-class OrchestratorReplyEvent(BaseEvent):
-    """Event emitted when orchestrator sends a direct reply."""
-    response: str
-    type: str = "orchestrator_reply"
-
-
-@dataclass
-class OrchestratorEndEvent(BaseEvent):
-    """Event emitted when orchestrator finishes solving."""
-    response: str
-    type: str = "orchestrator_end"
 
 
 @dataclass
@@ -95,18 +67,22 @@ class SlideAddedEvent(BaseEvent):
     type: str = "slide_added"
 
 
+@dataclass
+class OrchestratorThinkingEvent(BaseEvent):
+    """Event emitted when the orchestrator is thinking/processing."""
+    label: str = "Thinking..."
+    type: str = "orchestrator_thinking"
+
+
 # Event type registry for type-safe event creation
 EVENT_TYPES = {
-    "orchestrator_start": OrchestratorStartEvent,
     "consult_start": ConsultStartEvent,
     "consult_end": ConsultEndEvent,
-    "orchestrator_thinking": OrchestratorThinkingEvent,
-    "orchestrator_reply": OrchestratorReplyEvent,
-    "orchestrator_end": OrchestratorEndEvent,
     "error": ErrorEvent,
     "clarification_request": ClarificationRequestEvent,
     "done": DoneEvent,
     "slide_added": SlideAddedEvent,
+    "orchestrator_thinking": OrchestratorThinkingEvent,
 }
 
 
