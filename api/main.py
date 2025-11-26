@@ -19,7 +19,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from modular_agent.orchestrator import Orchestrator
 from modular_agent.config import DEFAULT_MODEL
 from modular_agent.database import DatabaseManager
-from api.events import BaseEvent, DoneEvent, ErrorEvent
+from api.events import BaseEvent, DoneEvent, ErrorEvent, ProcessingStartEvent, ProcessingCompleteEvent
 from api.auth import verify_google_token, create_access_token, oauth2_scheme, SECRET_KEY, ALGORITHM
 import jwt
 from fastapi import Depends, status
@@ -162,7 +162,13 @@ async def orchestrator_worker(session_id: str, problem: Optional[str], model: st
         if problem:
             # Save user message to DB (for agent context)
             await db_manager.add_message(session_id, {"role": "user", "content": problem})
+            # Emit processing_start event
+            processing_start_event = ProcessingStartEvent()
+            await callback(processing_start_event.to_dict())
             await orchestrator.process(problem)
+            # Emit processing_complete event
+            processing_complete_event = ProcessingCompleteEvent()
+            await callback(processing_complete_event.to_dict())
         
         # Event loop for follow-up messages
         while True:
@@ -175,8 +181,16 @@ async def orchestrator_worker(session_id: str, problem: Optional[str], model: st
                     # Save user message to DB (for agent context)
                     await db_manager.add_message(session_id, {"role": "user", "content": task['content']})
                     
+                    # Emit processing_start event
+                    processing_start_event = ProcessingStartEvent()
+                    await callback(processing_start_event.to_dict())
+                    
                     # Note: user_message slide is created inside orchestrator.process()
                     await orchestrator.process(task['content'])
+                    
+                    # Emit processing_complete event
+                    processing_complete_event = ProcessingCompleteEvent()
+                    await callback(processing_complete_event.to_dict())
                 elif task['type'] == 'stop':
                     break
             except asyncio.TimeoutError:

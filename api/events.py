@@ -74,6 +74,18 @@ class OrchestratorThinkingEvent(BaseEvent):
     type: str = "orchestrator_thinking"
 
 
+@dataclass
+class ProcessingStartEvent(BaseEvent):
+    """Event emitted when orchestrator starts processing a user input."""
+    type: str = "processing_start"
+
+
+@dataclass
+class ProcessingCompleteEvent(BaseEvent):
+    """Event emitted when orchestrator finishes processing a user input."""
+    type: str = "processing_complete"
+
+
 # Event type registry for type-safe event creation
 EVENT_TYPES = {
     "consult_start": ConsultStartEvent,
@@ -83,6 +95,8 @@ EVENT_TYPES = {
     "done": DoneEvent,
     "slide_added": SlideAddedEvent,
     "orchestrator_thinking": OrchestratorThinkingEvent,
+    "processing_start": ProcessingStartEvent,
+    "processing_complete": ProcessingCompleteEvent,
 }
 
 
