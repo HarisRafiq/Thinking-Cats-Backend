@@ -103,7 +103,8 @@ async def activate_session(session_id: str, session_data: Dict[str, Any]) -> Non
     sessions[session_id] = {
         "output_queue": output_queue,
         "input_queue": input_queue,
-        "task": None
+        "task": None,
+        "is_processing": False
     }
     
     # Start the orchestrator worker (without initial problem since we're resuming)
@@ -160,6 +161,9 @@ async def orchestrator_worker(session_id: str, problem: Optional[str], model: st
         
         # Initial process if problem is provided
         if problem:
+            # Mark as processing
+            if session_id in sessions:
+                sessions[session_id]["is_processing"] = True
             # Save user message to DB (for agent context)
             await db_manager.add_message(session_id, {"role": "user", "content": problem})
             # Emit processing_start event
@@ -169,6 +173,9 @@ async def orchestrator_worker(session_id: str, problem: Optional[str], model: st
             # Emit processing_complete event
             processing_complete_event = ProcessingCompleteEvent()
             await callback(processing_complete_event.to_dict())
+            # Mark as not processing
+            if session_id in sessions:
+                sessions[session_id]["is_processing"] = False
         
         # Event loop for follow-up messages
         while True:
@@ -178,6 +185,9 @@ async def orchestrator_worker(session_id: str, problem: Optional[str], model: st
                 task = await asyncio.wait_for(input_queue.get(), timeout=600) # 10 minute timeout
                 
                 if task['type'] == 'message':
+                    # Mark as processing
+                    if session_id in sessions:
+                        sessions[session_id]["is_processing"] = True
                     # Save user message to DB (for agent context)
                     await db_manager.add_message(session_id, {"role": "user", "content": task['content']})
                     
@@ -191,6 +201,9 @@ async def orchestrator_worker(session_id: str, problem: Optional[str], model: st
                     # Emit processing_complete event
                     processing_complete_event = ProcessingCompleteEvent()
                     await callback(processing_complete_event.to_dict())
+                    # Mark as not processing
+                    if session_id in sessions:
+                        sessions[session_id]["is_processing"] = False
                 elif task['type'] == 'stop':
                     break
             except asyncio.TimeoutError:
@@ -201,9 +214,15 @@ async def orchestrator_worker(session_id: str, problem: Optional[str], model: st
     except asyncio.CancelledError:
         print(f"Session {session_id} worker cancelled")
     except Exception as e:
+        # Mark as not processing on error
+        if session_id in sessions:
+            sessions[session_id]["is_processing"] = False
         error_event = ErrorEvent(message=str(e))
         await output_queue.put(error_event.to_dict())
     finally:
+        # Mark as not processing when worker exits
+        if session_id in sessions:
+            sessions[session_id]["is_processing"] = False
         # Signal end of stream
         done_event = DoneEvent()
         await output_queue.put(done_event.to_dict())
@@ -390,7 +409,8 @@ async def start_chat(request: ChatRequest, current_user: Dict[str, Any] = Depend
     sessions[session_id] = {
         "output_queue": output_queue,
         "input_queue": input_queue,
-        "task": None
+        "task": None,
+        "is_processing": False
     }
     
     # Start the orchestrator in a background task
@@ -523,12 +543,10 @@ async def get_session(session_id: str, current_user: Dict[str, Any] = Depends(ge
             slide["id"] = str(slide["id"])
     
     # Check if session is actively processing
-    # A session is processing if it's in the sessions dict and the task is running
+    # Use the is_processing flag from the session dict
     is_processing = False
     if session_id in sessions:
-        task = sessions[session_id].get("task")
-        if task and not task.done():
-            is_processing = True
+        is_processing = sessions[session_id].get("is_processing", False)
     
     return {
         "session_id": session_id,
