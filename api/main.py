@@ -522,10 +522,19 @@ async def get_session(session_id: str, current_user: Dict[str, Any] = Depends(ge
         if "id" in slide and not isinstance(slide["id"], str):
             slide["id"] = str(slide["id"])
     
+    # Check if session is actively processing
+    # A session is processing if it's in the sessions dict and the task is running
+    is_processing = False
+    if session_id in sessions:
+        task = sessions[session_id].get("task")
+        if task and not task.done():
+            is_processing = True
+    
     return {
         "session_id": session_id,
         "model": session.get("model"),
-        "slides": slides
+        "slides": slides,
+        "is_processing": is_processing
     }
 
 @app.delete("/sessions/{session_id}")
