@@ -87,12 +87,20 @@ class ProcessingCompleteEvent(BaseEvent):
     type: str = "processing_complete"
 
 
+@dataclass
+class ClarificationAnsweredEvent(BaseEvent):
+    """Event emitted when user responds to a clarification request."""
+    selectedOption: str
+    type: str = "clarification_answered"
+
+
 # Event type registry for type-safe event creation
 EVENT_TYPES = {
     "consult_start": ConsultStartEvent,
     "consult_end": ConsultEndEvent,
     "error": ErrorEvent,
     "clarification_request": ClarificationRequestEvent,
+    "clarification_answered": ClarificationAnsweredEvent,
     "done": DoneEvent,
     "slide_added": SlideAddedEvent,
     "orchestrator_thinking": OrchestratorThinkingEvent,

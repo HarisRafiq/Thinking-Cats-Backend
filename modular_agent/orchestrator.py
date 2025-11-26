@@ -185,6 +185,37 @@ class Orchestrator:
             # Ensure options is a standard list (fix for protobuf RepeatedComposite)
             safe_options = list(options) if options else []
             
+            # Create clarification slide in DB
+            if self.db_manager and self.session_id:
+                import uuid
+                temp_id = str(uuid.uuid4())
+                
+                slide = {
+                    "type": "clarification",
+                    "question": question,
+                    "options": safe_options,
+                    "id": temp_id,
+                    "answered": False
+                }
+                
+                # Create slide in DB in background (non-blocking)
+                async def _create_clarification_slide_background():
+                    try:
+                        slide_id = await self.db_manager.add_slide(self.session_id, slide)
+                        if slide_id != temp_id:
+                            slide["id"] = slide_id
+                    except Exception as e:
+                        if self.verbose:
+                            print(f"[Orchestrator] Error creating clarification slide in DB: {e}")
+                
+                asyncio.create_task(_create_clarification_slide_background())
+                
+                # Emit slide_added event immediately
+                await self._emit_event({
+                    "type": "slide_added",
+                    "slide": slide
+                })
+            
             await self._emit_event({
                 "type": "clarification_request",
                 "question": question,
@@ -244,8 +275,33 @@ class Orchestrator:
         return sanitized
 
     async def _create_user_message_slide(self, content: str):
-        """Helper method to create and store a user_message slide."""
+        """Helper method to create and store a user_message slide.
+        
+        If there's a pending clarification (waiting_for_clarification is True),
+        this converts the clarification slide to a Q&A format user_message instead.
+        """
         if not self.db_manager or not self.session_id:
+            return
+        
+        # Check if this is a response to a clarification
+        if self.waiting_for_clarification:
+            # Convert the clarification slide to Q&A format
+            async def _convert_clarification_background():
+                try:
+                    new_slide = await self.db_manager.convert_clarification_to_qa(self.session_id, content)
+                    if new_slide and self.verbose:
+                        print(f"[Orchestrator] Converted clarification to Q&A slide")
+                except Exception as e:
+                    if self.verbose:
+                        print(f"[Orchestrator] Error converting clarification slide in DB: {e}")
+            
+            asyncio.create_task(_convert_clarification_background())
+            
+            # Emit event to convert the clarification slide on frontend
+            await self._emit_event({
+                "type": "clarification_answered",
+                "selectedOption": content
+            })
             return
         
         # Generate temporary ID first for immediate event emission
@@ -333,7 +389,7 @@ class Orchestrator:
             "CRITICAL RULES:\n"
             "1. You MUST ONLY use tools. NEVER generate text responses or explanations.\n"
             "2. ALWAYS use the 'consult_expert' tool to summon a famous person. Do not simulate their responses.\n"
-            "3. Call ONE person at a time. And Only ask ONE question at a time that is missing from the conversation history and is relevant to the problem solution or blindspot. But make sure not to reference previous expert names in the question as experts cannot see full conversation histroy only the question you ask.\n"
+            "3. Call ONE person at a time. And Only ask ONE question at a time that is missing from the conversation history and is relevant to the problem solution or blindspot. The question MUST be an open-ended inquiry asking for the expert's advice, plan, or perspective. Do NOT provide the answer, perspective, or solution in the question itself. Make sure not to reference previous expert names in the question as experts cannot see full conversation histroy only the question you ask.\n"
             "4. Choose personalities that can offer the best advice on the missing piece of the puzzle.\n"               
             "5. If the input is VAGUE or lacks sufficient detail, use the 'ask_clarification' tool to ask the user for more information BEFORE consulting any experts. ALWAYS provide 2-4 creative options or assumptions in the 'options' argument for the user to choose from. These options MUST be phrased as user intents or suggestions (e.g., 'I want to write a sci-fi story', 'Focus on technical implementation', 'Explore historical context').\n"
             "6. CRITICAL: DO NOT ask for clarification more than once per session. If you have already asked for clarification, you MUST proceed with the best possible assumption or the user's selection.\n"
@@ -342,7 +398,7 @@ class Orchestrator:
             "9. Start by analyzing the input. If it's clear, summon the most relevant famous figure. If it's vague, ask for clarification (only once).\n"
             "10. After roundtable discussion is complete, just stop.\n"
             "11. Do not ask the same question to the same person more than once.\n"
-            "12. REMEMBER: You are a coordinator only. Use tools, do not speak."
+            "12. REMEMBER: You are a coordinator only. Use tools, do not speak. Do not lecture the experts."
         )
         
         self.waiting_for_clarification = False
@@ -391,12 +447,25 @@ class Orchestrator:
         
         # Reconstruct context
         self.agent.context.clear()
+        pending_clarification_response = False
         
         for item in timeline:
             if item['type'] == 'message':
                 msg = item['data']
                 if msg.get('role') == 'user':
-                    self.agent.context.add_user_message(msg.get('content'))
+                    content = msg.get('content')
+                    
+                    # If we're waiting for a clarification response, add it as function response
+                    if pending_clarification_response:
+                        from google.generativeai import protos
+                        fn_response = protos.FunctionResponse(
+                            name='ask_clarification',
+                            response={'result': content}
+                        )
+                        self.agent.context.add_function_response(fn_response)
+                        pending_clarification_response = False
+                    else:
+                        self.agent.context.add_user_message(content)
             
             elif item['type'] == 'event':
                 event = item['data']
@@ -433,5 +502,20 @@ class Orchestrator:
                         response={'result': f"[{real_expert}]: {response}"}
                     )
                     self.agent.context.add_function_response(fn_response)
+                    
+                elif event_type == 'clarification_request':
+                    # This corresponds to an ask_clarification function call
+                    question = event.get('question')
+                    options = event.get('options', [])
+                    
+                    from google.generativeai import protos
+                    fn_call = protos.FunctionCall(
+                        name='ask_clarification',
+                        args={'question': question, 'options': options}
+                    )
+                    self.agent.context.add_model_message("", function_call=fn_call)
+                    
+                    # The next user message after this is the response to the clarification
+                    pending_clarification_response = True
 
         print(f"[Orchestrator] History loaded. Context length: {len(self.agent.context)}")

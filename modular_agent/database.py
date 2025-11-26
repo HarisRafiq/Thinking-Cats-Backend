@@ -136,6 +136,55 @@ class DatabaseManager:
         
         return str(slide_id)
 
+    async def convert_clarification_to_qa(self, session_id: str, selected_option: str) -> Optional[Dict[str, Any]]:
+        """
+        Converts the most recent unanswered clarification slide to a user_message slide
+        with Q&A format. Returns the new slide data or None if no clarification found.
+        """
+        if self.db is None:
+            await self.connect()
+        
+        # First, find the session and get the clarification slide
+        session = await self.db.sessions.find_one(
+            {"_id": ObjectId(session_id)},
+            {"slides": 1}
+        )
+        
+        if not session or "slides" not in session:
+            return None
+        
+        # Find the last unanswered clarification slide
+        clarification_index = None
+        clarification_slide = None
+        for i, slide in enumerate(session["slides"]):
+            if slide.get("type") == "clarification" and not slide.get("answered", False):
+                clarification_index = i
+                clarification_slide = slide
+        
+        if clarification_slide is None:
+            return None
+        
+        # Create the new user_message slide with Q&A format
+        question = clarification_slide.get("question", "")
+        new_slide = {
+            "type": "user_message",
+            "content": f"Q: {question}\nA: {selected_option}",
+            "id": clarification_slide.get("id")  # Keep the same ID
+        }
+        
+        # Replace the clarification slide with the user_message slide
+        await self.db.sessions.update_one(
+            {"_id": ObjectId(session_id)},
+            {
+                "$set": {
+                    f"slides.{clarification_index}": new_slide,
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        
+        return new_slide
+
     async def archive_session(self, session_id: str):
         """Archives a session by setting is_archived to True."""
         if self.db is None:

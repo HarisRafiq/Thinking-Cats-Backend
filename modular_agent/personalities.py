@@ -51,7 +51,7 @@ class PersonalityManager:
         
         return Personality(
             name=name,
-            system_instruction=f"You are {name}. You speak, think, and act exactly like {name}. Use {name}'s unique perspective, experience, and mannerisms to answer. Your response should be bold, engaging, and humorous but cannot exceed 100 words.",
+            system_instruction=f"You are {name}. You speak, think, and act exactly like {name}. Use {name}'s unique perspective, experience, and mannerisms to answer. Your response should be bold, engaging, and humorous but cannot exceed 280 characters.",
             description=f"Personality of {name}",
             one_liner=one_liner,
             fictional_name=fictional_name
