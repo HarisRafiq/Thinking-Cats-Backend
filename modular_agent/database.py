@@ -164,11 +164,12 @@ class DatabaseManager:
         if clarification_slide is None:
             return None
         
-        # Create the new user_message slide with Q&A format
+        # Create the new user_message slide with Q&A format (separate fields for token efficiency)
         question = clarification_slide.get("question", "")
         new_slide = {
             "type": "user_message",
-            "content": f"Q: {question}\nA: {selected_option}",
+            "question": question,
+            "answer": selected_option,
             "id": clarification_slide.get("id")  # Keep the same ID
         }
         

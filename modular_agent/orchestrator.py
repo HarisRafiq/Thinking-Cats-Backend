@@ -421,6 +421,7 @@ class Orchestrator:
             
         print(f"[Orchestrator] Loading history for session {self.session_id}")
         
+        
         # Combine messages and events into a single timeline
         timeline = []
         
@@ -456,15 +457,28 @@ class Orchestrator:
                     content = msg.get('content')
                     
                     # If we're waiting for a clarification response, add it as function response
+                    # Use just the answer (question already in context from clarification_request)
                     if pending_clarification_response:
                         from google.generativeai import protos
+                        
+                        # Check if content is in old "Q: ... A: ..." format and extract answer
+                        answer_to_use = content
+                        if content.startswith("Q:") and "\nA:" in content:
+                            # Old format - extract just the answer for token efficiency
+                            parts = content.split("\nA:", 1)
+                            if len(parts) == 2:
+                                answer_to_use = parts[1].strip()
+                        # If there's a Q&A slide with this answer, we could use it, but content should work
+                        # (Q&A slides are for display, messages are for context)
+                        
                         fn_response = protos.FunctionResponse(
                             name='ask_clarification',
-                            response={'result': content}
+                            response={'result': answer_to_use}
                         )
                         self.agent.context.add_function_response(fn_response)
                         pending_clarification_response = False
                     else:
+                        # For non-Q&A messages, use content as-is
                         self.agent.context.add_user_message(content)
             
             elif item['type'] == 'event':
