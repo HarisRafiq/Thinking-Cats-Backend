@@ -166,30 +166,35 @@ class Orchestrator:
                 })
                 return error_msg
 
-        async def ask_clarification(question: str) -> str:
+        async def ask_clarification(question: str, options: List[str] = None) -> str:
             """
             Asks the user a clarifying question when the initial problem statement is insufficient.
             
             Args:
                 question: The clarifying question to ask the user.
+                options: A list of 2-4 creative options or assumptions for the user to choose from.
                 
             Returns:
                 The user's answer to the question.
             """
             if self.verbose:
-                print(f"\n[Orchestrator] Asking for clarification: {question}")
+                print(f"\n[Orchestrator] Asking for clarification: {question} (Options: {options})")
             
             self.waiting_for_clarification = True
             
+            # Ensure options is a standard list (fix for protobuf RepeatedComposite)
+            safe_options = list(options) if options else []
+            
             await self._emit_event({
                 "type": "clarification_request",
-                "question": question
+                "question": question,
+                "options": safe_options
             })
             
             # In a real interactive loop, we would wait for input here.
-            # For now, we return a placeholder or stop execution depending on the runner.
-            # The frontend will handle the event and prompt the user.
-            return "WAITING_FOR_USER_INPUT"
+            # We interrupt the agent loop to wait for user input
+            from .core import AgentInterruption
+            raise AgentInterruption("WAITING_FOR_USER_INPUT")
 
         # Initialize the main orchestrator agent
         self.agent = ModularAgent(
@@ -330,12 +335,14 @@ class Orchestrator:
             "2. ALWAYS use the 'consult_expert' tool to summon a famous person. Do not simulate their responses.\n"
             "3. Call ONE person at a time. And Only ask ONE question at a time that is missing from the conversation history and is relevant to the problem solution or blindspot. But make sure not to reference previous expert names in the question as experts cannot see full conversation histroy only the question you ask.\n"
             "4. Choose personalities that can offer the best advice on the missing piece of the puzzle.\n"               
-            "5. If the input is VAGUE or lacks sufficient detail, use the 'ask_clarification' tool to ask the user for more information BEFORE consulting any experts. But don't be too strict about it. Automatically assume where necessary.\n"
-            "6. You can iterate through the process as many times as needed.\n"
-            "7. Start by analyzing the input. If it's clear, summon the most relevant famous figure. If it's vague, ask for clarification.\n"
-            "8. After roundtable discussion is complete, just stop.\n"
-            "9. Do not ask the same question to the same person more than once.\n"
-            "10. REMEMBER: You are a coordinator only. Use tools, do not speak."
+            "5. If the input is VAGUE or lacks sufficient detail, use the 'ask_clarification' tool to ask the user for more information BEFORE consulting any experts. ALWAYS provide 2-4 creative options or assumptions in the 'options' argument for the user to choose from. These options MUST be phrased as user intents or suggestions (e.g., 'I want to write a sci-fi story', 'Focus on technical implementation', 'Explore historical context').\n"
+            "6. CRITICAL: DO NOT ask for clarification more than once per session. If you have already asked for clarification, you MUST proceed with the best possible assumption or the user's selection.\n"
+            "7. Ensure the options provided are sufficient to continue the task immediately without further questions.\n"
+            "8. You can iterate through the process as many times as needed.\n"
+            "9. Start by analyzing the input. If it's clear, summon the most relevant famous figure. If it's vague, ask for clarification (only once).\n"
+            "10. After roundtable discussion is complete, just stop.\n"
+            "11. Do not ask the same question to the same person more than once.\n"
+            "12. REMEMBER: You are a coordinator only. Use tools, do not speak."
         )
         
         self.waiting_for_clarification = False

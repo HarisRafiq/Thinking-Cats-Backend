@@ -6,6 +6,10 @@ from .tools import ToolManager
 from .context_manager import ContextManager
 from .llm import LLMProvider, GeminiProvider
 
+class AgentInterruption(Exception):
+    """Raised by tools to stop agent execution immediately."""
+    pass
+
 class ModularAgent:
     def __init__(
         self,
@@ -154,6 +158,22 @@ class ModularAgent:
                         # Add function response to context (Gemini expects function responses as user role)
                         self.context.add_function_response(fn_response)
                         
+                    except AgentInterruption as e:
+                        if self.verbose:
+                            print(f"[System] Agent execution interrupted: {str(e)}")
+                        # We stop the loop immediately. 
+                        # We do NOT add a function response because we want the conversation to effectively pause/end here.
+                        # Or maybe we should add it so the model knows what happened if we resume?
+                        # For clarification, the user will reply, and we will likely start a NEW turn or resume.
+                        # If we resume, we need the history.
+                        # Let's add the interruption message as a result so history is consistent.
+                        from google.generativeai import protos
+                        fn_response = protos.FunctionResponse(name=fn.name, response={"result": str(e)})
+                        if hasattr(fn, 'id') and fn.id:
+                            fn_response.id = fn.id
+                        self.context.add_function_response(fn_response)
+                        return str(e)
+
                     except Exception as e:
                         if self.verbose:
                             print(f"[Tool Error] Error executing {fn.name}: {str(e)}")

@@ -51,6 +51,7 @@ class ErrorEvent(BaseEvent):
 class ClarificationRequestEvent(BaseEvent):
     """Event emitted when orchestrator needs clarification from user."""
     question: str
+    options: Optional[list[str]] = None
     type: str = "clarification_request"
 
 
