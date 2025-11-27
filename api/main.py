@@ -114,14 +114,15 @@ async def activate_session(session_id: str, session_data: Dict[str, Any]) -> Non
             problem=None,  # No initial problem when resuming
             model=session_data.get("model", DEFAULT_MODEL), 
             input_queue=input_queue, 
-            output_queue=output_queue
+            output_queue=output_queue,
+            user_id=session_data.get("user_id")
         )
     )
     
     sessions[session_id]["task"] = task
     print(f"Session {session_id} activated successfully")
 
-async def orchestrator_worker(session_id: str, problem: Optional[str], model: str, input_queue: asyncio.Queue, output_queue: asyncio.Queue):
+async def orchestrator_worker(session_id: str, problem: Optional[str], model: str, input_queue: asyncio.Queue, output_queue: asyncio.Queue, user_id: Optional[str] = None):
     """
     Async worker function that loops to process incoming tasks (solve or chat).
     """
@@ -153,6 +154,7 @@ async def orchestrator_worker(session_id: str, problem: Optional[str], model: st
             verbose=True, 
             event_callback=callback,
             session_id=session_id,
+            user_id=user_id,
             db_manager=db_manager
         )
         
@@ -375,6 +377,17 @@ async def login_google(request: AuthRequest):
 
 @app.post("/chat", response_model=ChatResponse)
 async def start_chat(request: ChatRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
+    # Check user limits
+    can_send = await db_manager.check_user_limit(str(current_user["_id"]))
+    if not can_send:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "message": "Daily message limit reached. Please upgrade to Pro or wait until tomorrow.",
+                "code": "LIMIT_REACHED"
+            }
+        )
+
     # If resuming an existing session
     if request.session_id:
         session_id = request.session_id
@@ -415,7 +428,14 @@ async def start_chat(request: ChatRequest, current_user: Dict[str, Any] = Depend
     
     # Start the orchestrator in a background task
     task = asyncio.create_task(
-        orchestrator_worker(session_id, request.problem if not request.session_id else None, request.model, input_queue, output_queue)
+        orchestrator_worker(
+            session_id, 
+            request.problem if not request.session_id else None, 
+            request.model, 
+            input_queue, 
+            output_queue,
+            user_id=str(current_user["_id"])
+        )
     )
     
     sessions[session_id]["task"] = task
@@ -438,6 +458,17 @@ async def send_message(session_id: str, request: MessageRequest, current_user: D
         
         # Auto-activate the session
         await activate_session(session_id, session)
+        
+    # Check user limits
+    can_send = await db_manager.check_user_limit(str(current_user["_id"]))
+    if not can_send:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "message": "Daily message limit reached. Please upgrade to Pro or wait until tomorrow.",
+                "code": "LIMIT_REACHED"
+            }
+        )
         
     await sessions[session_id]['input_queue'].put({
         "type": "message",
@@ -580,6 +611,38 @@ async def delete_session(session_id: str, current_user: Dict[str, Any] = Depends
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+@app.get("/me")
+async def get_current_user_info(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Get current user information with usage stats."""
+    user = dict(current_user)
+    user['id'] = str(user['_id'])
+    del user['_id']
+    return user
+
+class UpdateTierRequest(BaseModel):
+    user_email: str
+    tier: str
+
+@app.post("/admin/tier")
+async def update_user_tier(request: UpdateTierRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """
+    Updates a user's subscription tier.
+    For now, any authenticated user can do this (for demo purposes).
+    In production, check for admin role.
+    """
+    # Check if target user exists
+    target_user = await db_manager.get_user_by_email(request.user_email)
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    # Update tier
+    await db_manager.db.users.update_one(
+        {"email": request.user_email},
+        {"$set": {"subscription_tier": request.tier, "updated_at": datetime.utcnow()}}
+    )
+    
+    return {"status": "updated", "email": request.user_email, "new_tier": request.tier}
 
 if __name__ == "__main__":
     import uvicorn

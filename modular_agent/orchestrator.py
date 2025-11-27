@@ -1,4 +1,4 @@
-from typing import List, Dict, Optional, Callable
+from typing import List, Dict, Optional, Callable, Any
 import google.generativeai as genai
 import asyncio
 from .core import ModularAgent
@@ -7,16 +7,17 @@ from .llm import GeminiProvider
 from .database import DatabaseManager
 
 class Orchestrator:
-    def __init__(self, model_name: str = "gemini-2.5-flash", verbose: bool = True, event_callback: Optional[Callable[[Dict], None]] = None, theme: str = "cat", session_id: Optional[str] = None, db_manager: Optional[DatabaseManager] = None):
+    def __init__(self, model_name: str = "gemini-2.5-flash", verbose: bool = True, event_callback: Optional[Callable[[Dict], None]] = None, theme: str = "cat", session_id: Optional[str] = None, user_id: Optional[str] = None, db_manager: Optional[DatabaseManager] = None):
         self.verbose = verbose
         self.model_name = model_name
         self.personality_manager = PersonalityManager()
         self.event_callback = event_callback
         self.theme = theme
-        self.waiting_for_clarification = False
+        # waiting_for_clarification removed - now using DB state
         self.active_experts = {} # Map real_name -> fictional_name
         self.pending_questions = {} # Map fictional_name -> sanitized_question
         self.session_id = session_id
+        self.user_id = user_id
         self.db_manager = db_manager
         
         # Initialize provider
@@ -96,7 +97,8 @@ class Orchestrator:
                     "one_liner": one_liner
                 })
 
-                response = await agent.run(question)
+                response, usage = await agent.run(question)
+                self._update_usage_background(usage)
                 
                 if self.verbose:
                     print(f"[{expert_name}] {response[:100]}..." if len(response) > 100 else f"[{expert_name}] {response}")
@@ -179,8 +181,7 @@ class Orchestrator:
             """
             if self.verbose:
                 print(f"\n[Orchestrator] Asking for clarification: {question} (Options: {options})")
-            
-            self.waiting_for_clarification = True
+
             
             # Ensure options is a standard list (fix for protobuf RepeatedComposite)
             safe_options = list(options) if options else []
@@ -198,23 +199,27 @@ class Orchestrator:
                     "answered": False
                 }
                 
-                # Create slide in DB in background (non-blocking)
-                async def _create_clarification_slide_background():
-                    try:
-                        slide_id = await self.db_manager.add_slide(self.session_id, slide)
-                        if slide_id != temp_id:
-                            slide["id"] = slide_id
-                    except Exception as e:
-                        if self.verbose:
-                            print(f"[Orchestrator] Error creating clarification slide in DB: {e}")
+                # Create slide in DB synchronously to get the real MongoDB ID
+                try:
+                    slide_id = await self.db_manager.add_slide(self.session_id, slide)
+                    slide["id"] = slide_id  # Update with the real MongoDB ObjectId
+                except Exception as e:
+                    if self.verbose:
+                        print(f"[Orchestrator] Error creating clarification slide in DB: {e}")
                 
-                asyncio.create_task(_create_clarification_slide_background())
-                
-                # Emit slide_added event immediately
+                # Emit slide_added event with the real MongoDB ID
                 await self._emit_event({
                     "type": "slide_added",
                     "slide": slide
                 })
+                
+                # Update session status to waiting_for_input with the REAL slide ID
+                await self.db_manager.update_session_status(
+                    self.session_id, 
+                    "waiting_for_input", 
+                    {"type": "clarification", "slide_id": slide["id"]}
+                )
+
             
             await self._emit_event({
                 "type": "clarification_request",
@@ -274,66 +279,118 @@ class Orchestrator:
                 
         return sanitized
 
-    async def _create_user_message_slide(self, content: str):
+    def _update_usage_background(self, usage: Dict[str, int]):
+        """Updates user usage in background."""
+        if not self.db_manager or not self.user_id:
+            return
+            
+        async def _update():
+            try:
+                # Cost calculation (approximate for Gemini Flash)
+                # Input: $0.075 / 1M tokens
+                # Output: $0.30 / 1M tokens
+                cost = (usage['input_tokens'] * 0.075 / 1_000_000) + (usage['output_tokens'] * 0.30 / 1_000_000)
+                
+                await self.db_manager.update_user_usage(
+                    self.user_id, 
+                    usage['input_tokens'], 
+                    usage['output_tokens'], 
+                    cost
+                )
+            except Exception as e:
+                if self.verbose:
+                    print(f"[Orchestrator] Error updating usage: {e}")
+        
+        asyncio.create_task(_update())
+
+    async def _create_user_message_slide(self, content: str, is_clarification_response: bool = False, pending_interaction: Optional[Dict[str, Any]] = None):
         """Helper method to create and store a user_message slide.
         
-        If there's a pending clarification (waiting_for_clarification is True),
-        this converts the clarification slide to a Q&A format user_message instead.
+        If is_clarification_response is True, this converts the clarification slide 
+        to a Q&A format user_message instead of creating a new slide.
         """
         if not self.db_manager or not self.session_id:
             return
         
         # Check if this is a response to a clarification
-        if self.waiting_for_clarification:
-            # Convert the clarification slide to Q&A format
-            async def _convert_clarification_background():
+        if is_clarification_response:
+            # Get the slide ID from the pending_interaction that was passed in
+            slide_id = pending_interaction.get("slide_id") if pending_interaction else None
+            
+            if slide_id:
+                # Update the clarification slide directly in DB (synchronously to ensure it completes)
                 try:
-                    new_slide = await self.db_manager.convert_clarification_to_qa(self.session_id, content)
-                    if new_slide and self.verbose:
-                        print(f"[Orchestrator] Converted clarification to Q&A slide")
+                    # Find the slide and get its question
+                    from bson import ObjectId
+                    from datetime import datetime
+                    
+                    session = await self.db_manager.get_session(self.session_id)
+                    if session and "slides" in session:
+                        for i, slide in enumerate(session["slides"]):
+                            if slide.get("id") == slide_id and slide.get("type") == "clarification":
+                                # Create Q&A slide with same ID
+                                new_slide = {
+                                    "type": "user_message",
+                                    "question": slide.get("question", ""),
+                                    "answer": content,
+                                    "id": slide_id
+                                }
+                                # Update the slide in DB
+                                await self.db_manager.db.sessions.update_one(
+                                    {"_id": ObjectId(self.session_id)},
+                                    {
+                                        "$set": {
+                                            f"slides.{i}": new_slide,
+                                            "updated_at": datetime.utcnow()
+                                        }
+                                    }
+                                )
+                                if self.verbose:
+                                    print(f"[Orchestrator] Converted clarification to Q&A slide")
+                                break
                 except Exception as e:
                     if self.verbose:
-                        print(f"[Orchestrator] Error converting clarification slide in DB: {e}")
+                        print(f"[Orchestrator] Error converting clarification slide: {e}")
+                
+                # Emit event to convert the clarification slide on frontend
+                await self._emit_event({
+                    "type": "clarification_answered",
+                    "selectedOption": content
+                })
             
-            asyncio.create_task(_convert_clarification_background())
+            # Don't create a new slide for clarification responses - slide was already updated above
+            # But DO continue to let the agent process the answer
+        else:
+            # Generate temporary ID first for immediate event emission
+            import uuid
+            temp_id = str(uuid.uuid4())
             
-            # Emit event to convert the clarification slide on frontend
+            slide = {
+                "type": "user_message",
+                "content": content,
+                "id": temp_id  # Temporary ID, will be updated by background task
+            }
+            
+            # Create slide in DB in background (non-blocking)
+            async def _create_slide_background():
+                try:
+                    slide_id = await self.db_manager.add_slide(self.session_id, slide)
+                    # Update slide ID if different from temp (though usually same)
+                    if slide_id != temp_id:
+                        slide["id"] = slide_id
+                except Exception as e:
+                    if self.verbose:
+                        print(f"[Orchestrator] Error creating slide in DB: {e}")
+                    # Keep temporary ID if DB write fails
+            
+            # Start background task for slide creation (fire-and-forget)
+            asyncio.create_task(_create_slide_background())
+            
+            # Emit slide_added event immediately (non-blocking)
             await self._emit_event({
-                "type": "clarification_answered",
-                "selectedOption": content
+                "type": "slide_added",
+                "slide": slide
             })
-            return
-        
-        # Generate temporary ID first for immediate event emission
-        import uuid
-        temp_id = str(uuid.uuid4())
-        
-        slide = {
-            "type": "user_message",
-            "content": content,
-            "id": temp_id  # Temporary ID, will be updated by background task
-        }
-        
-        # Create slide in DB in background (non-blocking)
-        async def _create_slide_background():
-            try:
-                slide_id = await self.db_manager.add_slide(self.session_id, slide)
-                # Update slide ID if different from temp (though usually same)
-                if slide_id != temp_id:
-                    slide["id"] = slide_id
-            except Exception as e:
-                if self.verbose:
-                    print(f"[Orchestrator] Error creating slide in DB: {e}")
-                # Keep temporary ID if DB write fails
-        
-        # Start background task for slide creation (fire-and-forget)
-        asyncio.create_task(_create_slide_background())
-        
-        # Emit slide_added event immediately (non-blocking)
-        await self._emit_event({
-            "type": "slide_added",
-            "slide": slide
-        })
 
     async def _emit_event(self, event_data: Dict):
         """Helper method to emit events, handling null callback. Non-blocking DB writes."""
@@ -371,9 +428,28 @@ class Orchestrator:
         """
         if self.verbose:
             print(f"\n[Orchestrator] Received input: {user_input}")
+            
+        # Check current session status
+        is_clarification_response = False
+        pending_interaction = None
+        if self.db_manager and self.session_id:
+            session = await self.db_manager.get_session(self.session_id)
+            if session and session.get("status") == "waiting_for_input":
+                pending = session.get("pending_interaction", {})
+                if pending and pending.get("type") == "clarification":
+                    is_clarification_response = True
+                    pending_interaction = pending  # Save this BEFORE we clear it
+                    if self.verbose:
+                        print(f"[Orchestrator] Handling input as clarification response")
         
+        # Update status to processing (this will clear pending_interaction)
+        if self.db_manager and self.session_id:
+            await self.db_manager.update_session_status(self.session_id, "processing")
+
         # Create user_message slide for the input
-        await self._create_user_message_slide(user_input)
+        # If it's a clarification response, this method handles the conversion
+        await self._create_user_message_slide(user_input, is_clarification_response=is_clarification_response, pending_interaction=pending_interaction)
+
 
         # Emit thinking event
         await self._emit_event({
@@ -400,9 +476,16 @@ class Orchestrator:
             "11. Do not ask the same question to the same person more than once.\n"
             "12. REMEMBER: You are a coordinator only. Use tools, do not speak. Do not lecture the experts."
         )
+        response, usage = await self.agent.chat(prompt)
+        self._update_usage_background(usage)
         
-        self.waiting_for_clarification = False
-        response = await self.agent.chat(prompt)
+        # If we reached here without raising AgentInterruption (i.e. no clarification asked),
+        # we are done with this turn. Set status to idle.
+        if self.db_manager and self.session_id:
+             # Check if we are actually waiting for input (AgentInterruption would have been raised, but just in case)
+             # If the agent just finished normally, we are idle.
+             await self.db_manager.update_session_status(self.session_id, "idle")
+
         
         # The orchestrator should not generate text responses, but if it does (fallback),
         # we don't emit events or create slides for it since it's not supposed to happen.
@@ -448,7 +531,15 @@ class Orchestrator:
         
         # Reconstruct context
         self.agent.context.clear()
+        
+        # We don't need pending_clarification_response flag anymore for logic flow, 
+        # but we might need it to reconstruct the conversation correctly if we want to 
+        # simulate the function response.
+        # Actually, if the session status is 'waiting_for_input', the last item should be a clarification request.
+        # If we are loading history, we just replay what happened.
+        
         pending_clarification_response = False
+
         
         for item in timeline:
             if item['type'] == 'message':

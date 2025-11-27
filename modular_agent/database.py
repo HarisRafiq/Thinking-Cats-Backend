@@ -33,11 +33,42 @@ class DatabaseManager:
         user_data['updated_at'] = datetime.utcnow()
         if 'created_at' not in user_data:
             user_data['created_at'] = datetime.utcnow()
+        
+        # Initialize subscription and usage fields if new
+        if 'subscription_tier' not in user_data:
+            user_data['subscription_tier'] = 'free'
             
+        # We don't overwrite usage_stats on update, only on insert if missing
+        # But since we use $set, we should be careful. 
+        # Let's use $setOnInsert for initial fields
+        
         # Upsert based on email
+        # We split into $set (updates) and $setOnInsert (initials)
+        
+        update_op = {
+            "$set": {
+                "email": user_data["email"],
+                "name": user_data.get("name"),
+                "picture": user_data.get("picture"),
+                "google_id": user_data.get("google_id"),
+                "updated_at": user_data["updated_at"]
+            },
+            "$setOnInsert": {
+                "created_at": user_data["created_at"],
+                "subscription_tier": "free",
+                "usage_stats": {
+                    "total_tokens": 0,
+                    "total_cost": 0.0,
+                    "message_count": 0,
+                    "daily_message_count": 0,
+                    "last_reset_date": datetime.utcnow().isoformat()
+                }
+            }
+        }
+        
         result = await self.db.users.update_one(
             {"email": user_data["email"]},
-            {"$set": user_data},
+            update_op,
             upsert=True
         )
         
@@ -47,6 +78,95 @@ class DatabaseManager:
         # If not upserted, get the existing ID
         user = await self.db.users.find_one({"email": user_data["email"]})
         return str(user["_id"])
+
+    async def update_user_usage(self, user_id: str, input_tokens: int, output_tokens: int, cost: float = 0.0):
+        """Updates the user's usage statistics."""
+        if self.db is None:
+            await self.connect()
+            
+        # Check if we need to reset daily limits first
+        user = await self.get_user_by_id(user_id)
+        if user:
+            last_reset = user.get("usage_stats", {}).get("last_reset_date")
+            if last_reset:
+                try:
+                    last_reset_date = datetime.fromisoformat(last_reset).date()
+                    if datetime.utcnow().date() > last_reset_date:
+                        await self.reset_daily_limits(user_id)
+                except ValueError:
+                    # Handle legacy or invalid date format
+                    pass
+
+        await self.db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {
+                "$inc": {
+                    "usage_stats.total_tokens": input_tokens + output_tokens,
+                    "usage_stats.total_cost": cost,
+                    "usage_stats.message_count": 1,
+                    "usage_stats.daily_message_count": 1
+                },
+                "$set": {
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+
+    async def check_user_limit(self, user_id: str) -> bool:
+        """
+        Checks if the user has reached their daily message limit.
+        Returns True if user CAN send message, False if limit reached.
+        """
+        if self.db is None:
+            await self.connect()
+            
+        user = await self.get_user_by_id(user_id)
+        if not user:
+            return False
+            
+        tier = user.get("subscription_tier", "free")
+        usage = user.get("usage_stats", {})
+        
+        # Check for daily reset
+        last_reset = usage.get("last_reset_date")
+        if last_reset:
+            try:
+                last_reset_date = datetime.fromisoformat(last_reset).date()
+                if datetime.utcnow().date() > last_reset_date:
+                    # Reset needed - we can do it lazily here or assume it will be done
+                    # Let's do it here to be safe and allow the message
+                    await self.reset_daily_limits(user_id)
+                    return True
+            except ValueError:
+                pass
+        
+        daily_count = usage.get("daily_message_count", 0)
+        
+        # Hardcoded limits for now - move to config later
+        LIMITS = {
+            "free": 50,
+            "pro": 500
+        }
+        
+        limit = LIMITS.get(tier, 50)
+        
+        return daily_count < limit
+
+    async def reset_daily_limits(self, user_id: str):
+        """Resets the daily message count for a user."""
+        if self.db is None:
+            await self.connect()
+            
+        await self.db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {
+                "$set": {
+                    "usage_stats.daily_message_count": 0,
+                    "usage_stats.last_reset_date": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
 
     async def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         """Retrieves a user by email."""
@@ -74,6 +194,10 @@ class DatabaseManager:
         data['created_at'] = datetime.utcnow()
         data['updated_at'] = datetime.utcnow()
         
+        # Initialize status if not present
+        if 'status' not in data:
+            data['status'] = 'idle'  # idle, processing, waiting_for_input
+            
         result = await self.db.sessions.insert_one(data)
         return str(result.inserted_id)
 
@@ -136,55 +260,27 @@ class DatabaseManager:
         
         return str(slide_id)
 
-    async def convert_clarification_to_qa(self, session_id: str, selected_option: str) -> Optional[Dict[str, Any]]:
-        """
-        Converts the most recent unanswered clarification slide to a user_message slide
-        with Q&A format. Returns the new slide data or None if no clarification found.
-        """
+    async def update_session_status(self, session_id: str, status: str, pending_interaction: Optional[Dict[str, Any]] = None):
+        """Updates the session status and pending interaction details."""
         if self.db is None:
             await self.connect()
-        
-        # First, find the session and get the clarification slide
-        session = await self.db.sessions.find_one(
-            {"_id": ObjectId(session_id)},
-            {"slides": 1}
-        )
-        
-        if not session or "slides" not in session:
-            return None
-        
-        # Find the last unanswered clarification slide
-        clarification_index = None
-        clarification_slide = None
-        for i, slide in enumerate(session["slides"]):
-            if slide.get("type") == "clarification" and not slide.get("answered", False):
-                clarification_index = i
-                clarification_slide = slide
-        
-        if clarification_slide is None:
-            return None
-        
-        # Create the new user_message slide with Q&A format (separate fields for token efficiency)
-        question = clarification_slide.get("question", "")
-        new_slide = {
-            "type": "user_message",
-            "question": question,
-            "answer": selected_option,
-            "id": clarification_slide.get("id")  # Keep the same ID
+            
+        update_data = {
+            "status": status,
+            "updated_at": datetime.utcnow()
         }
         
-        # Replace the clarification slide with the user_message slide
+        if pending_interaction is not None:
+            update_data["pending_interaction"] = pending_interaction
+        elif status == "idle" or status == "processing":
+            # Clear pending interaction when moving to idle or processing
+            update_data["pending_interaction"] = None
+            
         await self.db.sessions.update_one(
             {"_id": ObjectId(session_id)},
-            {
-                "$set": {
-                    f"slides.{clarification_index}": new_slide,
-                    "updated_at": datetime.utcnow()
-                }
-            }
+            {"$set": update_data}
         )
-        
-        return new_slide
+
 
     async def archive_session(self, session_id: str):
         """Archives a session by setting is_archived to True."""

@@ -72,6 +72,11 @@ class ModularAgent:
         # Add current user message to context
         self.context.add_user_message(user_input)
         
+        # Capture start tokens for delta calculation
+        start_input_tokens = self.total_input_tokens
+        start_output_tokens = self.total_output_tokens
+        start_total_tokens = self.total_tokens
+        
         # Manual function calling loop to ensure we get a final text response
         max_iterations = 20  # Prevent infinite loops
         iteration = 0
@@ -196,6 +201,7 @@ class ModularAgent:
                 )
                 iteration += 1
             
+            
             if iteration >= max_iterations:
                 print(f"\n[Warning] Reached maximum function calling iterations ({max_iterations})")
                 if not final_response_text and response_text:
@@ -228,7 +234,14 @@ class ModularAgent:
             else:
                 raise e
         
-        return final_response_text
+        # Calculate usage for this chat turn
+        current_usage = {
+            'input_tokens': self.total_input_tokens - start_input_tokens,
+            'output_tokens': self.total_output_tokens - start_output_tokens,
+            'total_tokens': self.total_tokens - start_total_tokens
+        }
+        
+        return final_response_text, current_usage
 
     async def run(self, user_input: str) -> str:
         """Single-shot execution (no history)."""
@@ -251,7 +264,7 @@ class ModularAgent:
             print(f"\n[Token Usage] Input: {usage['input_tokens']}, Output: {usage['output_tokens']}, Total: {usage['total_tokens']}")
             print(f"[Cumulative Tokens] Input: {self.total_input_tokens}, Output: {self.total_output_tokens}, Total: {self.total_tokens}")
         
-        return response.text
+        return response.text, usage
 
     def as_tool(self) -> Callable:
         """
@@ -260,7 +273,8 @@ class ModularAgent:
         """
         def agent_tool(query: str):
             """Consults the sub-agent to answer a query."""
-            return self.run(query)
+            response, _ = self.run(query)
+            return response
         
         agent_tool.__name__ = f"ask_{self.current_personality.name.lower()}_agent"
         return agent_tool
