@@ -83,6 +83,12 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> Dict[str, Any
     if user is None:
         raise credentials_exception
         
+    if user.get("is_blocked"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account has been blocked. Please contact support.",
+        )
+        
     return user
 
 async def activate_session(session_id: str, session_data: Dict[str, Any]) -> None:
@@ -712,6 +718,50 @@ async def get_shared_session(session_id: str):
             "description": description
         }
     }
+
+
+
+@app.get("/admin/stats")
+async def get_admin_stats(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Get aggregate statistics for admin dashboard."""
+    # TODO: Add role check
+    return await db_manager.get_admin_stats()
+
+@app.get("/admin/users")
+async def get_admin_users(limit: int = 50, skip: int = 0, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Get list of users."""
+    # TODO: Add role check
+    return await db_manager.get_all_users(limit=limit, skip=skip)
+
+@app.get("/admin/logs")
+async def get_admin_logs(user_id: Optional[str] = None, limit: int = 50, skip: int = 0, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Get LLM logs."""
+    # TODO: Add role check
+    return await db_manager.get_llm_logs(user_id=user_id, limit=limit, skip=skip)
+
+class UpdateUserStatusRequest(BaseModel):
+    is_blocked: bool
+
+class UpdateUserTierRequest(BaseModel):
+    tier: str
+
+@app.put("/admin/users/{user_id}/status")
+async def update_user_status(user_id: str, request: UpdateUserStatusRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Update user blocked status."""
+    # TODO: Add role check
+    success = await db_manager.set_user_status(user_id, request.is_blocked)
+    if not success:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"status": "updated", "is_blocked": request.is_blocked}
+
+@app.put("/admin/users/{user_id}/tier")
+async def update_user_tier_admin(user_id: str, request: UpdateUserTierRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Update user tier (admin)."""
+    # TODO: Add role check
+    success = await db_manager.set_user_tier(user_id, request.tier)
+    if not success:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"status": "updated", "tier": request.tier}
 
 if __name__ == "__main__":
     import uvicorn

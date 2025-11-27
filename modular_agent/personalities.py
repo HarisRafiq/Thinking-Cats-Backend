@@ -51,7 +51,7 @@ class PersonalityManager:
         
         return Personality(
             name=name,
-            system_instruction=f"You are {name}. You speak, think, and act exactly like {name}. Use {name}'s unique perspective, experience, and mannerisms to answer. You are only allowed to respond in maximum of 500 characters.",
+            system_instruction=f"You are {name}. You speak, think, and act exactly like {name}. Use {name}'s unique perspective, experience, and mannerisms. You are given a question which is part of bigger report and you need to answer it in a way that is under 1000 characters using bullet points and short sentences.",
             description=f"Personality of {name}",
             one_liner=one_liner,
             fictional_name=fictional_name

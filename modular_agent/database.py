@@ -56,6 +56,7 @@ class DatabaseManager:
             "$setOnInsert": {
                 "created_at": user_data["created_at"],
                 "subscription_tier": "free",
+                "is_blocked": False,
                 "usage_stats": {
                     "total_tokens": 0,
                     "total_cost": 0.0,
@@ -397,3 +398,103 @@ class DatabaseManager:
         """Closes the MongoDB connection."""
         if self.client:
             self.client.close()
+
+    async def log_llm_call(self, log_data: Dict[str, Any]):
+        """Logs an LLM call to the database."""
+        if self.db is None:
+            await self.connect()
+            
+        log_data['timestamp'] = datetime.utcnow()
+        await self.db.llm_logs.insert_one(log_data)
+
+    async def get_all_users(self, limit: int = 50, skip: int = 0) -> List[Dict[str, Any]]:
+        """Retrieves all users with pagination."""
+        if self.db is None:
+            await self.connect()
+            
+        cursor = self.db.users.find({}).sort("created_at", -1).skip(skip).limit(limit)
+        users = await cursor.to_list(length=limit)
+        
+        for user in users:
+            user['id'] = str(user['_id'])
+            del user['_id']
+            
+        return users
+
+    async def get_llm_logs(self, user_id: Optional[str] = None, limit: int = 50, skip: int = 0) -> List[Dict[str, Any]]:
+        """Retrieves LLM logs with pagination and optional user filter."""
+        if self.db is None:
+            await self.connect()
+            
+        query = {}
+        if user_id:
+            query['user_id'] = user_id
+            
+        cursor = self.db.llm_logs.find(query).sort("timestamp", -1).skip(skip).limit(limit)
+        logs = await cursor.to_list(length=limit)
+        
+        for log in logs:
+            log['id'] = str(log['_id'])
+            del log['_id']
+            # Convert timestamp to string
+            if 'timestamp' in log:
+                log['timestamp'] = log['timestamp'].isoformat()
+            
+        return logs
+
+    async def get_admin_stats(self) -> Dict[str, Any]:
+        """Retrieves aggregate statistics for the admin dashboard."""
+        if self.db is None:
+            await self.connect()
+            
+        total_users = await self.db.users.count_documents({})
+        total_sessions = await self.db.sessions.count_documents({})
+        
+        # Aggregate total tokens and cost from users collection
+        pipeline = [
+            {
+                "$group": {
+                    "_id": None,
+                    "total_tokens": {"$sum": "$usage_stats.total_tokens"},
+                    "total_cost": {"$sum": "$usage_stats.total_cost"}
+                }
+            }
+        ]
+        
+        usage_stats = await self.db.users.aggregate(pipeline).to_list(length=1)
+        
+        total_tokens = 0
+        total_cost = 0.0
+        
+        if usage_stats:
+            total_tokens = usage_stats[0].get("total_tokens", 0)
+            total_cost = usage_stats[0].get("total_cost", 0.0)
+            
+        return {
+            "total_users": total_users,
+            "total_sessions": total_sessions,
+            "total_tokens": total_tokens,
+            "total_cost": total_cost
+        }
+
+    async def set_user_status(self, user_id: str, is_blocked: bool) -> bool:
+        """Sets the blocked status of a user."""
+        if self.db is None:
+            await self.connect()
+            
+        result = await self.db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"is_blocked": is_blocked, "updated_at": datetime.utcnow()}}
+        )
+        return result.modified_count > 0
+
+    async def set_user_tier(self, user_id: str, tier: str) -> bool:
+        """Sets the subscription tier of a user."""
+        if self.db is None:
+            await self.connect()
+            
+        result = await self.db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"subscription_tier": tier, "updated_at": datetime.utcnow()}}
+        )
+        return result.modified_count > 0

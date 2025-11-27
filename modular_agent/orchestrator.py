@@ -98,7 +98,7 @@ class Orchestrator:
                 })
 
                 response, usage = await agent.run(question)
-                self._update_usage_background(usage)
+                self._log_usage_background(usage, model=self.model_name, prompt=question, response=response)
                 
                 if self.verbose:
                     print(f"[{expert_name}] {response[:100]}..." if len(response) > 100 else f"[{expert_name}] {response}")
@@ -254,8 +254,8 @@ class Orchestrator:
                 
         return sanitized
 
-    def _update_usage_background(self, usage: Dict[str, int]):
-        """Updates user usage in background."""
+    def _log_usage_background(self, usage: Dict[str, int], model: str = "gemini-2.5-flash", prompt: str = None, response: str = None):
+        """Updates user usage and logs LLM call in background."""
         if not self.db_manager or not self.user_id:
             return
             
@@ -266,15 +266,30 @@ class Orchestrator:
                 # Output: $0.30 / 1M tokens
                 cost = (usage['input_tokens'] * 0.075 / 1_000_000) + (usage['output_tokens'] * 0.30 / 1_000_000)
                 
+                # Update user usage stats
                 await self.db_manager.update_user_usage(
                     self.user_id, 
                     usage['input_tokens'], 
                     usage['output_tokens'], 
                     cost
                 )
+                
+                # Log detailed LLM call
+                await self.db_manager.log_llm_call({
+                    "user_id": self.user_id,
+                    "session_id": self.session_id,
+                    "model": model,
+                    "input_tokens": usage['input_tokens'],
+                    "output_tokens": usage['output_tokens'],
+                    "total_tokens": usage['total_tokens'],
+                    "cost": cost,
+                    "prompt": prompt[:2000] if prompt else None, # Truncate for storage
+                    "response": response[:2000] if response else None # Truncate for storage
+                })
+                
             except Exception as e:
                 if self.verbose:
-                    print(f"[Orchestrator] Error updating usage: {e}")
+                    print(f"[Orchestrator] Error updating usage/logging: {e}")
         
         asyncio.create_task(_update())
 
@@ -431,24 +446,22 @@ class Orchestrator:
         # Construct prompt that instructs orchestrator to only use tools, never generate text
         prompt = (
             f"User input: {user_input}\n\n"
-            "You are the moderator of a roundtable discussion. You have the ability to summon any famous personality from history or real world that are best suited to help solve the problem.\n"
-            "Your goal is to coordinate a diverse team of these famous figures that each work progressively to reach the solution.\n\n"
+            "Your job is to create a compelling report on the given user prompt. You have the context history of the conversation for reference. You have the ability to summon any famous personality from history or real world to help you finish up the report.\n"
             "CRITICAL RULES:\n"
             "1. You MUST ONLY use tools. NEVER generate text responses or explanations.\n"
             "2. ALWAYS use the 'consult_expert' tool to summon a famous person. Do not simulate their responses.\n"
-            "3. Call ONE person at a time. And Only ask ONE question at a time that is missing from the conversation history and is relevant to the problem solution or blindspot. The question MUST be an open-ended inquiry asking for the expert's advice, plan, or perspective. Do NOT provide the answer, perspective, or solution in the question itself. Make sure not to reference previous expert names in the question as experts cannot see full conversation histroy only the question you ask.\n"
+            "3. Call ONE expert at a time. Ask the expert for one missing piece of the puzzle of the report. Do NOT provide the answer, perspective, or solution in the question itself. Make sure not to reference previous expert names in the question as experts cannot see full conversation histroy only the task you give it with complete context.\n"
             "4. Choose personalities that can offer the best advice on the missing piece of the puzzle.\n"               
-            "5. If the input is VAGUE or lacks sufficient detail, use the 'ask_clarification' tool to ask the user for more information BEFORE consulting any experts. ALWAYS provide 2-4 creative options or assumptions in the 'options' argument for the user to choose from. These options MUST be phrased as user intents or suggestions (e.g., 'I want to write a sci-fi story', 'Focus on technical implementation', 'Explore historical context').\n"
+            "5. If the user input and converstation history does not have enough context to make assumptions and proceed, use the 'ask_clarification' tool to ask the user for more information BEFORE consulting any experts. ALWAYS provide 2-4 creative options or assumptions in the 'options' argument for the user to choose from. These options MUST be phrased as user intents or suggestions (e.g., 'I want to write a sci-fi story', 'Focus on technical implementation', 'Explore historical context').\n"
             "6. CRITICAL: DO NOT ask for clarification more than once per session. If you have already asked for clarification, you MUST proceed with the best possible assumption or the user's selection.\n"
             "7. Ensure the options provided are sufficient to continue the task immediately without further questions.\n"
             "8. You can iterate through the process as many times as needed.\n"
             "9. Start by analyzing the input. If it's clear, summon the most relevant famous figure. If it's vague, ask for clarification (only once).\n"
-            "10. After roundtable discussion is complete, just stop.\n"
-            "11. Do not ask the same question to the same person more than once.\n"
-            "12. REMEMBER: You are a coordinator only. Use tools, do not speak. Do not lecture the experts."
+            "10. After you think the report is complete, just stop.\n"
+            "11. REMEMBER: You are a coordinator only. Use tools, do not speak. Do not lecture the experts."
         )
         response, usage = await self.agent.chat(prompt)
-        self._update_usage_background(usage)
+        self._log_usage_background(usage, model=self.model_name, prompt=prompt, response=response)
         
         # If we reached here without raising AgentInterruption (i.e. no clarification asked),
         # we are done with this turn. Set status to idle.
