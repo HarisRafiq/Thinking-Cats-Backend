@@ -155,7 +155,7 @@ class Orchestrator:
                 # Emit thinking event again as we return to orchestrator
                 await self._emit_event({
                     "type": "orchestrator_thinking",
-                    "label": "Orchestrator is thinking..."
+                    "label": "Thinking Cats are planning..."
                 })
 
                 return f"[{expert_name}]: {response}"
@@ -454,7 +454,7 @@ class Orchestrator:
         # Emit thinking event
         await self._emit_event({
             "type": "orchestrator_thinking",
-            "label": "Orchestrator is thinking..."
+            "label": "Thinking Cats are planning..."
         })
         
         # Construct prompt that instructs orchestrator to only use tools, never generate text

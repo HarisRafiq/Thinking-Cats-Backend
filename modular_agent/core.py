@@ -177,7 +177,14 @@ class ModularAgent:
                         if hasattr(fn, 'id') and fn.id:
                             fn_response.id = fn.id
                         self.context.add_function_response(fn_response)
-                        return str(e)
+                        
+                        # Calculate usage for this chat turn before returning
+                        current_usage = {
+                            'input_tokens': self.total_input_tokens - start_input_tokens,
+                            'output_tokens': self.total_output_tokens - start_output_tokens,
+                            'total_tokens': self.total_tokens - start_total_tokens
+                        }
+                        return str(e), current_usage
 
                     except Exception as e:
                         if self.verbose:

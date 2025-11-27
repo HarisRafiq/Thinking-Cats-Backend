@@ -2,7 +2,7 @@ import sys
 import os
 import asyncio
 import json
-from datetime import timedelta
+from datetime import timedelta, datetime
 from typing import Dict, Any, Optional, List
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -583,7 +583,8 @@ async def get_session(session_id: str, current_user: Dict[str, Any] = Depends(ge
         "session_id": session_id,
         "model": session.get("model"),
         "slides": slides,
-        "is_processing": is_processing
+        "is_processing": is_processing,
+        "is_shared": session.get("is_shared", False)
     }
 
 @app.delete("/sessions/{session_id}")
@@ -624,6 +625,9 @@ class UpdateTierRequest(BaseModel):
     user_email: str
     tier: str
 
+class ShareToggleRequest(BaseModel):
+    is_shared: bool
+
 @app.post("/admin/tier")
 async def update_user_tier(request: UpdateTierRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
     """
@@ -643,6 +647,70 @@ async def update_user_tier(request: UpdateTierRequest, current_user: Dict[str, A
     )
     
     return {"status": "updated", "email": request.user_email, "new_tier": request.tier}
+
+@app.post("/sessions/{session_id}/share")
+async def toggle_session_sharing(session_id: str, request: ShareToggleRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Toggle sharing on/off for a session. Requires authentication and ownership."""
+    # Verify session exists and ownership
+    session = await db_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    if session.get("user_id") != str(current_user["_id"]):
+        raise HTTPException(status_code=403, detail="Not authorized to access this session")
+    
+    # Toggle sharing
+    success = await db_manager.toggle_session_sharing(session_id, request.is_shared)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to update sharing status")
+    
+    # Get updated session
+    updated_session = await db_manager.get_session(session_id)
+    
+    # Generate public URL (assuming frontend domain from env or default)
+    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
+    public_url = f"{frontend_url}/share/{session_id}" if request.is_shared else None
+    
+    return {
+        "session_id": session_id,
+        "is_shared": request.is_shared,
+        "public_url": public_url
+    }
+
+@app.get("/share/{session_id}")
+async def get_shared_session(session_id: str):
+    """Get shared session data (public, no auth required)."""
+    session = await db_manager.get_shared_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found or not shared")
+    
+    # Get slides array, default to empty if not present
+    slides = session.get("slides", [])
+    
+    # Convert any ObjectIds in slides to strings
+    for slide in slides:
+        if "id" in slide and not isinstance(slide["id"], str):
+            slide["id"] = str(slide["id"])
+    
+    # Generate metadata for SEO
+    first_message = None
+    if session.get("messages") and len(session["messages"]) > 0:
+        first_message = session["messages"][0].get("content", "")
+    
+    title = first_message[:100] if first_message else "Conversation on ThinkingCats"
+    description = f"See how AI experts collaborate to solve: {first_message[:150]}" if first_message else "See how AI experts collaborate to solve complex problems on ThinkingCats"
+    
+    return {
+        "session_id": session_id,
+        "model": session.get("model"),
+        "slides": slides,
+        "problem": session.get("problem", ""),
+        "created_at": session.get("created_at"),
+        "metadata": {
+            "title": title,
+            "description": description
+        }
+    }
 
 if __name__ == "__main__":
     import uvicorn

@@ -197,6 +197,10 @@ class DatabaseManager:
         # Initialize status if not present
         if 'status' not in data:
             data['status'] = 'idle'  # idle, processing, waiting_for_input
+        
+        # Initialize is_shared if not present
+        if 'is_shared' not in data:
+            data['is_shared'] = False
             
         result = await self.db.sessions.insert_one(data)
         return str(result.inserted_id)
@@ -291,6 +295,43 @@ class DatabaseManager:
             {"_id": ObjectId(session_id)},
             {"$set": {"is_archived": True, "updated_at": datetime.utcnow()}}
         )
+
+    async def toggle_session_sharing(self, session_id: str, is_shared: bool) -> bool:
+        """Toggles sharing status for a session. Returns True if successful."""
+        if self.db is None:
+            await self.connect()
+        
+        result = await self.db.sessions.update_one(
+            {"_id": ObjectId(session_id)},
+            {"$set": {"is_shared": is_shared, "updated_at": datetime.utcnow()}}
+        )
+        
+        return result.modified_count > 0
+
+    async def get_shared_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves a session by _id only if it's shared. Returns None if not found or not shared."""
+        if self.db is None:
+            await self.connect()
+        
+        try:
+            session = await self.db.sessions.find_one({
+                "_id": ObjectId(session_id),
+                "is_shared": True
+            })
+            if session:
+                # Convert ObjectId to string for JSON serialization
+                session['session_id'] = str(session['_id'])
+                del session['_id']
+                
+                # Convert ObjectIds in slides array to strings
+                if 'slides' in session and isinstance(session['slides'], list):
+                    for slide in session['slides']:
+                        if 'id' in slide and not isinstance(slide['id'], str):
+                            slide['id'] = str(slide['id'])
+            return session
+        except Exception as e:
+            print(f"Error retrieving shared session {session_id}: {e}")
+            return None
 
     async def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Retrieves a session by _id."""
