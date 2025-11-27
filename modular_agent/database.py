@@ -269,16 +269,31 @@ class DatabaseManager:
         if self.db is None:
             await self.connect()
             
+        # Get current session to check if we're moving from waiting_for_input
+        current_session = await self.get_session(session_id)
+        current_status = current_session.get("status") if current_session else None
+        is_moving_from_waiting = current_status == "waiting_for_input"
+        
         update_data = {
             "status": status,
             "updated_at": datetime.utcnow()
         }
         
         if pending_interaction is not None:
+            # Explicitly set pending_interaction
             update_data["pending_interaction"] = pending_interaction
-        elif status == "idle" or status == "processing":
-            # Clear pending interaction when moving to idle or processing
-            update_data["pending_interaction"] = None
+        else:
+            # If pending_interaction is not provided:
+            # - If moving to idle/processing from waiting_for_input, preserve it
+            # - Otherwise, clear it when moving to idle/processing
+            if status in ("idle", "processing"):
+                if is_moving_from_waiting:
+                    # Preserve existing pending_interaction when moving from waiting_for_input
+                    # Don't include it in update_data, so it stays as is
+                    pass
+                else:
+                    # Clear pending_interaction when moving to idle/processing from other states
+                    update_data["pending_interaction"] = None
             
         await self.db.sessions.update_one(
             {"_id": ObjectId(session_id)},

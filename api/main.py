@@ -584,7 +584,8 @@ async def get_session(session_id: str, current_user: Dict[str, Any] = Depends(ge
         "model": session.get("model"),
         "slides": slides,
         "is_processing": is_processing,
-        "is_shared": session.get("is_shared", False)
+        "is_shared": session.get("is_shared", False),
+        "pending_interaction": session.get("pending_interaction")
     }
 
 @app.delete("/sessions/{session_id}")

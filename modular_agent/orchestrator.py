@@ -186,38 +186,13 @@ class Orchestrator:
             # Ensure options is a standard list (fix for protobuf RepeatedComposite)
             safe_options = list(options) if options else []
             
-            # Create clarification slide in DB
+            # Update session status to waiting_for_input with question and options
+            # No slide is created - clarification is handled via session state
             if self.db_manager and self.session_id:
-                import uuid
-                temp_id = str(uuid.uuid4())
-                
-                slide = {
-                    "type": "clarification",
-                    "question": question,
-                    "options": safe_options,
-                    "id": temp_id,
-                    "answered": False
-                }
-                
-                # Create slide in DB synchronously to get the real MongoDB ID
-                try:
-                    slide_id = await self.db_manager.add_slide(self.session_id, slide)
-                    slide["id"] = slide_id  # Update with the real MongoDB ObjectId
-                except Exception as e:
-                    if self.verbose:
-                        print(f"[Orchestrator] Error creating clarification slide in DB: {e}")
-                
-                # Emit slide_added event with the real MongoDB ID
-                await self._emit_event({
-                    "type": "slide_added",
-                    "slide": slide
-                })
-                
-                # Update session status to waiting_for_input with the REAL slide ID
                 await self.db_manager.update_session_status(
                     self.session_id, 
                     "waiting_for_input", 
-                    {"type": "clarification", "slide_id": slide["id"]}
+                    {"type": "clarification", "question": question, "options": safe_options}
                 )
 
             
@@ -306,60 +281,55 @@ class Orchestrator:
     async def _create_user_message_slide(self, content: str, is_clarification_response: bool = False, pending_interaction: Optional[Dict[str, Any]] = None):
         """Helper method to create and store a user_message slide.
         
-        If is_clarification_response is True, this converts the clarification slide 
-        to a Q&A format user_message instead of creating a new slide.
+        If is_clarification_response is True, this creates a Q&A format user_message slide
+        directly using the question from pending_interaction.
         """
         if not self.db_manager or not self.session_id:
             return
         
         # Check if this is a response to a clarification
         if is_clarification_response:
-            # Get the slide ID from the pending_interaction that was passed in
-            slide_id = pending_interaction.get("slide_id") if pending_interaction else None
+            # Get the question from pending_interaction
+            question = pending_interaction.get("question", "") if pending_interaction else ""
             
-            if slide_id:
-                # Update the clarification slide directly in DB (synchronously to ensure it completes)
+            if question:
+                # Create a new Q&A user_message slide directly
                 try:
-                    # Find the slide and get its question
-                    from bson import ObjectId
-                    from datetime import datetime
+                    import uuid
+                    temp_id = str(uuid.uuid4())
                     
-                    session = await self.db_manager.get_session(self.session_id)
-                    if session and "slides" in session:
-                        for i, slide in enumerate(session["slides"]):
-                            if slide.get("id") == slide_id and slide.get("type") == "clarification":
-                                # Create Q&A slide with same ID
-                                new_slide = {
-                                    "type": "user_message",
-                                    "question": slide.get("question", ""),
-                                    "answer": content,
-                                    "id": slide_id
-                                }
-                                # Update the slide in DB
-                                await self.db_manager.db.sessions.update_one(
-                                    {"_id": ObjectId(self.session_id)},
-                                    {
-                                        "$set": {
-                                            f"slides.{i}": new_slide,
-                                            "updated_at": datetime.utcnow()
-                                        }
-                                    }
-                                )
-                                if self.verbose:
-                                    print(f"[Orchestrator] Converted clarification to Q&A slide")
-                                break
+                    slide = {
+                        "type": "user_message",
+                        "question": question,
+                        "answer": content,
+                        "id": temp_id
+                    }
+                    
+                    # Create slide in DB synchronously
+                    slide_id = await self.db_manager.add_slide(self.session_id, slide)
+                    slide["id"] = slide_id  # Update with the real MongoDB ObjectId
+                    
+                    # Emit slide_added event with the real MongoDB ID
+                    await self._emit_event({
+                        "type": "slide_added",
+                        "slide": slide
+                    })
+                    
+                    if self.verbose:
+                        print(f"[Orchestrator] Created Q&A user_message slide for clarification response")
                 except Exception as e:
                     if self.verbose:
-                        print(f"[Orchestrator] Error converting clarification slide: {e}")
+                        print(f"[Orchestrator] Error creating Q&A slide for clarification response: {e}")
+                    import traceback
+                    traceback.print_exc()
                 
-                # Emit event to convert the clarification slide on frontend
+                # Emit event to notify frontend
                 await self._emit_event({
                     "type": "clarification_answered",
                     "selectedOption": content
                 })
             
-            # Don't create a new slide for clarification responses - slide was already updated above
-            # But DO continue to let the agent process the answer
+            # Continue to let the agent process the answer
         else:
             # Generate temporary ID first for immediate event emission
             import uuid
@@ -442,9 +412,10 @@ class Orchestrator:
                     if self.verbose:
                         print(f"[Orchestrator] Handling input as clarification response")
         
-        # Update status to processing (this will clear pending_interaction)
+        # Update status to processing
+        # Explicitly clear pending_interaction when processing a response (user has answered)
         if self.db_manager and self.session_id:
-            await self.db_manager.update_session_status(self.session_id, "processing")
+            await self.db_manager.update_session_status(self.session_id, "processing", None)
 
         # Create user_message slide for the input
         # If it's a clarification response, this method handles the conversion
@@ -483,8 +454,11 @@ class Orchestrator:
         # we are done with this turn. Set status to idle.
         if self.db_manager and self.session_id:
              # Check if we are actually waiting for input (AgentInterruption would have been raised, but just in case)
-             # If the agent just finished normally, we are idle.
-             await self.db_manager.update_session_status(self.session_id, "idle")
+             # Only set to idle if we're not waiting for input
+             session = await self.db_manager.get_session(self.session_id)
+             if session and session.get("status") != "waiting_for_input":
+                 # If the agent just finished normally and we're not waiting for input, we are idle.
+                 await self.db_manager.update_session_status(self.session_id, "idle")
 
         
         # The orchestrator should not generate text responses, but if it does (fallback),
