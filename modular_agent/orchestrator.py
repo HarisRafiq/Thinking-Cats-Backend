@@ -446,19 +446,7 @@ class Orchestrator:
         # Construct prompt that instructs orchestrator to only use tools, never generate text
         prompt = (
             f"User input: {user_input}\n\n"
-            "Your job is to create a compelling report on the given user prompt. You have the context history of the conversation for reference. You have the ability to summon any famous personality from history or real world to help you finish up the report.\n"
-            "CRITICAL RULES:\n"
-            "1. You MUST ONLY use tools. NEVER generate text responses or explanations.\n"
-            "2. ALWAYS use the 'consult_expert' tool to summon a famous person. Do not simulate their responses.\n"
-            "3. Call ONE expert at a time. Ask the expert for one missing piece of the puzzle of the report. Do NOT provide the answer, perspective, or solution in the question itself. Make sure not to reference previous expert names in the question as experts cannot see full conversation histroy only the task you give it with complete context.\n"
-            "4. Choose personalities that can offer the best advice on the missing piece of the puzzle.\n"               
-            "5. If the user input and converstation history does not have enough context to make assumptions and proceed, use the 'ask_clarification' tool to ask the user for more information BEFORE consulting any experts. ALWAYS provide 2-4 creative options or assumptions in the 'options' argument for the user to choose from. These options MUST be phrased as user intents or suggestions (e.g., 'I want to write a sci-fi story', 'Focus on technical implementation', 'Explore historical context').\n"
-            "6. CRITICAL: DO NOT ask for clarification more than once per session. If you have already asked for clarification, you MUST proceed with the best possible assumption or the user's selection.\n"
-            "7. Ensure the options provided are sufficient to continue the task immediately without further questions.\n"
-            "8. You can iterate through the process as many times as needed.\n"
-            "9. Start by analyzing the input. If it's clear, summon the most relevant famous figure. If it's vague, ask for clarification (only once).\n"
-            "10. After you think the report is complete, just stop.\n"
-            "11. REMEMBER: You are a coordinator only. Use tools, do not speak. Do not lecture the experts."
+            "Your job is to create a compelling report on the given user prompt. You have the context history of the conversation for reference. You have the ability to summon any famous personality from history or real world to help you finish up the report."
         )
         response, usage = await self.agent.chat(prompt)
         self._log_usage_background(usage, model=self.model_name, prompt=prompt, response=response)
