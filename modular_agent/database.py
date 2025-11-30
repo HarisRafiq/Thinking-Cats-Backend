@@ -59,6 +59,7 @@ class DatabaseManager:
                 "is_blocked": False,
                 "usage_stats": {
                     "total_tokens": 0,
+                    "total_thinking_tokens": 0,
                     "total_cost": 0.0,
                     "message_count": 0,
                     "daily_message_count": 0,
@@ -80,7 +81,7 @@ class DatabaseManager:
         user = await self.db.users.find_one({"email": user_data["email"]})
         return str(user["_id"])
 
-    async def update_user_usage(self, user_id: str, input_tokens: int, output_tokens: int, cost: float = 0.0):
+    async def update_user_usage(self, user_id: str, input_tokens: int, output_tokens: int, thinking_tokens: int = 0, cost: float = 0.0):
         """Updates the user's usage statistics."""
         if self.db is None:
             await self.connect()
@@ -102,7 +103,8 @@ class DatabaseManager:
             {"_id": ObjectId(user_id)},
             {
                 "$inc": {
-                    "usage_stats.total_tokens": input_tokens + output_tokens,
+                    "usage_stats.total_tokens": input_tokens + output_tokens + thinking_tokens,
+                    "usage_stats.total_thinking_tokens": thinking_tokens,
                     "usage_stats.total_cost": cost,
                     "usage_stats.message_count": 1,
                     "usage_stats.daily_message_count": 1

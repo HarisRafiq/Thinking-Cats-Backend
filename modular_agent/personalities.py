@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 
 @dataclass
 class Personality:
@@ -58,39 +58,47 @@ class PersonalityManager:
     def list_personalities(self):
         return list(self.personalities.keys())
 
-    def create_dynamic_personality(self, name: str, model=None, theme: str = "cat") -> Personality:
-        """Creates a personality on the fly for a famous figure."""
+    def create_dynamic_personality(self, name: str, provider=None, theme: str = "cat") -> Tuple[Personality, Dict[str, int]]:
+        """Creates a personality on the fly for a famous figure. Returns (Personality, usage_dict)."""
         # Generate a one-liner description and fictional name
-        one_liner, fictional_name = self._generate_one_liner_and_fictional_name(name, model, theme)
+        one_liner, fictional_name, usage = self._generate_one_liner_and_fictional_name(name, provider, theme)
         
-        return Personality(
+        personality = Personality(
             name=name,
             system_instruction=f"You are {name}. You speak, think, and act exactly like {name}. You are always asked about something that you already deep intuition of. You need to format your response in a way that is under 1000 characters using headings and short sentences in a markdown format.",
             description=f"Personality of {name}",
             one_liner=one_liner,
             fictional_name=fictional_name
         )
+        return personality, usage
     
-    def _generate_one_liner_and_fictional_name(self, name: str, model=None, theme: str = "cat") -> Tuple[str, str]:
+    def _generate_one_liner_and_fictional_name(self, name: str, provider=None, theme: str = "cat") -> Tuple[str, str, Dict[str, int]]:
         """Generates both a one-liner description and a fictional name for a famous person."""
-        if model is None:
-            # Fallback: return simple descriptions if no model provided
-            return f"Famous figure: {name}", name
+        usage = {'input_tokens': 0, 'output_tokens': 0, 'thinking_tokens': 0, 'total_tokens': 0}
+        
+        if provider is None:
+            # Fallback: return simple descriptions if no provider provided
+            return f"Famous figure: {name}", name, usage
         
         try:
             prompt = (
         f"For the famous person {name}, provide:\n"
         f"1. A fictional {theme}-themed name inspired by the person’s real name."
         f"Ensure it is clearly humorous, playful and legally safe. But it should be simple for readers to pick up the hint for real person.\n\n"
-
         f"2. A concise one-liner why this person is best to answer the question. Be witty and funny."
         f"Max 10 words.\n\n"
-
         f"Format your response EXACTLY as:\n"
         f"ONE_LINER: [the one-liner]\n"
         f"FICTIONAL_NAME: [the fictional name]\n\n"
             )
-            response = model.generate_content(prompt)
+            
+            # Use provider to generate content
+            response = provider.generate_content(prompt)
+            
+            # Extract usage
+            if hasattr(provider, 'get_token_usage'):
+                usage = provider.get_token_usage(response)
+            
             text = response.text.strip()
             
             # Parse the response
@@ -118,7 +126,8 @@ class PersonalityManager:
             one_liner = one_liner[:100] if one_liner else f"Famous figure: {name}"
             fictional_name = fictional_name if fictional_name else name
             
-            return one_liner, fictional_name
+            return one_liner, fictional_name, usage
         except Exception as e:
             # Fallback on error
-            return f"Famous figure: {name}", name
+            print(f"Error generating dynamic personality: {e}")
+            return f"Famous figure: {name}", name, usage

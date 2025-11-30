@@ -64,14 +64,15 @@ class Orchestrator:
                         fictional_name = personality.fictional_name or expert_name
                 else:
                     # Dynamic personality
-                    # We need to pass a model to create_dynamic_personality, but it expects a genai.GenerativeModel
-                    # Let's expose the model from provider or just create one temporarily
-                    # Ideally create_dynamic_personality should be updated, but for now let's use the provider's internal model if possible
-                    # or just pass the provider and update create_dynamic_personality.
-                    # For now, let's just create a genai model as before for this specific helper
-                    _temp_model = genai.GenerativeModel(model_name=self.model_name)
-                    personality = self.personality_manager.create_dynamic_personality(expert_name, _temp_model, theme=self.theme)
+                    # We pass the _one_liner_provider to create_dynamic_personality
+                    # This provider is just a GeminiProvider instance, so it has generate_content
                     
+                    personality, usage = self.personality_manager.create_dynamic_personality(expert_name, self._one_liner_provider, theme=self.theme)
+                    
+                    # Log usage for dynamic personality generation
+                    if usage['total_tokens'] > 0:
+                        self._log_usage_background(usage, model=self.model_name, prompt=f"Dynamic personality generation for {expert_name}", response=f"One-liner: {personality.one_liner}")
+
                     agent = ModularAgent(provider=self.provider, personality='default', verbose=False)
                     agent.current_personality = personality
                     # agent._setup_model() # No longer needed as provider handles it
@@ -264,13 +265,21 @@ class Orchestrator:
                 # Cost calculation (approximate for Gemini Flash)
                 # Input: $0.075 / 1M tokens
                 # Output: $0.30 / 1M tokens
-                cost = (usage['input_tokens'] * 0.075 / 1_000_000) + (usage['output_tokens'] * 0.30 / 1_000_000)
+                # Thinking tokens are priced as output tokens (usually)
+                thinking_tokens = usage.get('thinking_tokens', 0)
+                output_tokens = usage['output_tokens']
+                
+                # Total output-equivalent tokens for cost
+                total_output_equivalent = output_tokens + thinking_tokens
+                
+                cost = (usage['input_tokens'] * 0.075 / 1_000_000) + (total_output_equivalent * 0.30 / 1_000_000)
                 
                 # Update user usage stats
                 await self.db_manager.update_user_usage(
                     self.user_id, 
                     usage['input_tokens'], 
-                    usage['output_tokens'], 
+                    output_tokens, 
+                    thinking_tokens,
                     cost
                 )
                 
@@ -280,7 +289,8 @@ class Orchestrator:
                     "session_id": self.session_id,
                     "model": model,
                     "input_tokens": usage['input_tokens'],
-                    "output_tokens": usage['output_tokens'],
+                    "output_tokens": output_tokens,
+                    "thinking_tokens": thinking_tokens,
                     "total_tokens": usage['total_tokens'],
                     "cost": cost,
                     "prompt": prompt[:2000] if prompt else None, # Truncate for storage

@@ -43,6 +43,7 @@ class ModularAgent:
         # Token Usage Tracking
         self.total_input_tokens = 0
         self.total_output_tokens = 0
+        self.total_thinking_tokens = 0
         self.total_tokens = 0
 
     def set_personality(self, personality_name: str):
@@ -56,6 +57,7 @@ class ModularAgent:
         return {
             'input_tokens': self.total_input_tokens,
             'output_tokens': self.total_output_tokens,
+            'thinking_tokens': self.total_thinking_tokens,
             'total_tokens': self.total_tokens
         }
     
@@ -63,6 +65,7 @@ class ModularAgent:
         """Resets token usage counters."""
         self.total_input_tokens = 0
         self.total_output_tokens = 0
+        self.total_thinking_tokens = 0
         self.total_tokens = 0
 
     async def chat(self, user_input: str) -> str:
@@ -75,6 +78,7 @@ class ModularAgent:
         # Capture start tokens for delta calculation
         start_input_tokens = self.total_input_tokens
         start_output_tokens = self.total_output_tokens
+        start_thinking_tokens = self.total_thinking_tokens
         start_total_tokens = self.total_tokens
         
         # Manual function calling loop to ensure we get a final text response
@@ -102,6 +106,7 @@ class ModularAgent:
                 usage = self.provider.get_token_usage(response)
                 self.total_input_tokens += usage['input_tokens']
                 self.total_output_tokens += usage['output_tokens']
+                self.total_thinking_tokens += usage.get('thinking_tokens', 0)
                 self.total_tokens += usage['total_tokens']
                 
                 if self.verbose:
@@ -182,6 +187,7 @@ class ModularAgent:
                         current_usage = {
                             'input_tokens': self.total_input_tokens - start_input_tokens,
                             'output_tokens': self.total_output_tokens - start_output_tokens,
+                            'thinking_tokens': self.total_thinking_tokens - start_thinking_tokens,
                             'total_tokens': self.total_tokens - start_total_tokens
                         }
                         return str(e), current_usage
@@ -245,6 +251,7 @@ class ModularAgent:
         current_usage = {
             'input_tokens': self.total_input_tokens - start_input_tokens,
             'output_tokens': self.total_output_tokens - start_output_tokens,
+            'thinking_tokens': self.total_thinking_tokens - start_thinking_tokens,
             'total_tokens': self.total_tokens - start_total_tokens
         }
         
@@ -265,6 +272,7 @@ class ModularAgent:
         usage = self.provider.get_token_usage(response)
         self.total_input_tokens += usage['input_tokens']
         self.total_output_tokens += usage['output_tokens']
+        self.total_thinking_tokens += usage.get('thinking_tokens', 0)
         self.total_tokens += usage['total_tokens']
         
         if self.verbose:
