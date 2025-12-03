@@ -1,9 +1,13 @@
-from typing import Dict, Any
-from fastapi import Depends, HTTPException, status
+import os
+from typing import Dict, Any, Optional
+from fastapi import Depends, HTTPException, status, Header, Request
 from fastapi.security import OAuth2PasswordBearer
 import jwt
 from api.auth import SECRET_KEY, ALGORITHM, oauth2_scheme
 from api.core_dependencies import get_db_manager
+
+# Admin token/key for admin endpoints (set via ADMIN_TOKEN env var)
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "admin-token-placeholder")
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db_manager = Depends(get_db_manager)) -> Dict[str, Any]:
     """Dependency to get the current authenticated user."""
@@ -32,3 +36,27 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db_manager = Dep
         )
         
     return user
+
+async def verify_admin_token(request: Request) -> bool:
+    """Dependency to verify admin token for admin endpoints using X-Admin-Token header."""
+    # Skip authentication for OPTIONS requests (CORS preflight)
+    if request.method == "OPTIONS":
+        return True
+    
+    # Get admin token from custom header
+    admin_token = request.headers.get("X-Admin-Token")
+    
+    if not admin_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="X-Admin-Token header required",
+        )
+    
+    # Verify token matches admin token
+    if admin_token != ADMIN_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid admin token",
+        )
+    
+    return True

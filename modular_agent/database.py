@@ -396,6 +396,40 @@ class DatabaseManager:
         
         return sessions
 
+    async def get_all_sessions_admin(
+        self,
+        limit: int = 50,
+        skip: int = 0,
+        user_id: Optional[str] = None,
+        status: Optional[str] = None,
+        is_shared: Optional[bool] = None
+    ) -> List[Dict[str, Any]]:
+        """Retrieves sessions for admin with pagination and filtering."""
+        if self.db is None:
+            await self.connect()
+            
+        query = {"is_archived": {"$ne": True}}
+        if user_id:
+            query['user_id'] = user_id
+        if status:
+            query['status'] = status
+        if is_shared is not None:
+            query['is_shared'] = is_shared
+
+        cursor = self.db.sessions.find(
+            query, 
+            {"messages": 0, "events": 0}  # Exclude heavy fields for listing
+        ).sort("updated_at", -1).skip(skip).limit(limit)
+        
+        sessions = await cursor.to_list(length=limit)
+        
+        # Convert ObjectId to string for each session
+        for session in sessions:
+            session['session_id'] = str(session['_id'])
+            del session['_id']
+        
+        return sessions
+
     def close(self):
         """Closes the MongoDB connection."""
         if self.client:
@@ -409,12 +443,36 @@ class DatabaseManager:
         log_data['timestamp'] = datetime.utcnow()
         await self.db.llm_logs.insert_one(log_data)
 
-    async def get_all_users(self, limit: int = 50, skip: int = 0) -> List[Dict[str, Any]]:
-        """Retrieves all users with pagination."""
+    async def get_all_users(
+        self, 
+        limit: int = 50, 
+        skip: int = 0,
+        search: Optional[str] = None,
+        tier: Optional[str] = None,
+        is_blocked: Optional[bool] = None
+    ) -> List[Dict[str, Any]]:
+        """Retrieves all users with pagination and filtering."""
         if self.db is None:
             await self.connect()
+        
+        query = {}
+        
+        # Search filter (email or name)
+        if search:
+            query["$or"] = [
+                {"email": {"$regex": search, "$options": "i"}},
+                {"name": {"$regex": search, "$options": "i"}}
+            ]
+        
+        # Tier filter
+        if tier:
+            query["subscription_tier"] = tier
+        
+        # Blocked status filter
+        if is_blocked is not None:
+            query["is_blocked"] = is_blocked
             
-        cursor = self.db.users.find({}).sort("created_at", -1).skip(skip).limit(limit)
+        cursor = self.db.users.find(query).sort("created_at", -1).skip(skip).limit(limit)
         users = await cursor.to_list(length=limit)
         
         for user in users:
@@ -423,14 +481,25 @@ class DatabaseManager:
             
         return users
 
-    async def get_llm_logs(self, user_id: Optional[str] = None, limit: int = 50, skip: int = 0) -> List[Dict[str, Any]]:
-        """Retrieves LLM logs with pagination and optional user filter."""
+    async def get_llm_logs(
+        self, 
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        model: Optional[str] = None,
+        limit: int = 50, 
+        skip: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Retrieves LLM logs with pagination and filtering."""
         if self.db is None:
             await self.connect()
             
         query = {}
         if user_id:
             query['user_id'] = user_id
+        if session_id:
+            query['session_id'] = session_id
+        if model:
+            query['model'] = model
             
         cursor = self.db.llm_logs.find(query).sort("timestamp", -1).skip(skip).limit(limit)
         logs = await cursor.to_list(length=limit)
