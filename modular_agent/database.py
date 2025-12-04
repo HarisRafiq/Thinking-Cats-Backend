@@ -569,3 +569,24 @@ class DatabaseManager:
             {"$set": {"subscription_tier": tier, "updated_at": datetime.utcnow()}}
         )
         return result.modified_count > 0
+
+    async def get_cached_personality(self, expert_name: str) -> Optional[Dict[str, Any]]:
+        """Retrieves a cached personality by expert name."""
+        if self.db is None:
+            await self.connect()
+            
+        return await self.db.personalities.find_one({"name": expert_name.lower()})
+
+    async def cache_personality(self, expert_name: str, data: Dict[str, Any]):
+        """Caches a personality in the database."""
+        if self.db is None:
+            await self.connect()
+            
+        data['name'] = expert_name.lower()
+        data['updated_at'] = datetime.utcnow()
+        
+        await self.db.personalities.update_one(
+            {"name": expert_name.lower()},
+            {"$set": data},
+            upsert=True
+        )

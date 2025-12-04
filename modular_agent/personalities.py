@@ -10,7 +10,8 @@ class Personality:
     fictional_name: Optional[str] = None
 
 class PersonalityManager:
-    def __init__(self):
+    def __init__(self, db_manager=None):
+        self.db_manager = db_manager
         self.personalities = {
             "default": Personality(
                 name="Default",
@@ -58,10 +59,25 @@ class PersonalityManager:
     def list_personalities(self):
         return list(self.personalities.keys())
 
-    def create_dynamic_personality(self, name: str, provider=None, theme: str = "cat") -> Tuple[Personality, Dict[str, int]]:
+    async def create_dynamic_personality(self, name: str, provider=None, theme: str = "cat") -> Tuple[Personality, Dict[str, int]]:
         """Creates a personality on the fly for a famous figure. Returns (Personality, usage_dict)."""
+        
+        # Check cache first
+        if self.db_manager:
+            cached = await self.db_manager.get_cached_personality(name)
+            if cached:
+                personality = Personality(
+                    name=cached['name'],
+                    system_instruction=cached['system_instruction'],
+                    description=cached['description'],
+                    one_liner=cached['one_liner'],
+                    fictional_name=cached['fictional_name']
+                )
+                # Return empty usage for cached hit
+                return personality, {'input_tokens': 0, 'output_tokens': 0, 'thinking_tokens': 0, 'total_tokens': 0}
+
         # Generate a one-liner description and fictional name
-        one_liner, fictional_name, usage = self._generate_one_liner_and_fictional_name(name, provider, theme)
+        one_liner, fictional_name, usage = await self._generate_one_liner_and_fictional_name(name, provider, theme)
         
         personality = Personality(
             name=name,
@@ -70,9 +86,19 @@ class PersonalityManager:
             one_liner=one_liner,
             fictional_name=fictional_name
         )
+        
+        # Cache the result
+        if self.db_manager:
+            await self.db_manager.cache_personality(name, {
+                "system_instruction": personality.system_instruction,
+                "description": personality.description,
+                "one_liner": personality.one_liner,
+                "fictional_name": personality.fictional_name
+            })
+            
         return personality, usage
     
-    def _generate_one_liner_and_fictional_name(self, name: str, provider=None, theme: str = "cat") -> Tuple[str, str, Dict[str, int]]:
+    async def _generate_one_liner_and_fictional_name(self, name: str, provider=None, theme: str = "cat") -> Tuple[str, str, Dict[str, int]]:
         """Generates both a one-liner description and a fictional name for a famous person."""
         usage = {'input_tokens': 0, 'output_tokens': 0, 'thinking_tokens': 0, 'total_tokens': 0}
         
@@ -93,7 +119,10 @@ class PersonalityManager:
             )
             
             # Use provider to generate content
-            response = provider.generate_content(prompt)
+            if hasattr(provider, 'generate_content_async'):
+                response = await provider.generate_content_async(prompt)
+            else:
+                response = provider.generate_content(prompt)
             
             # Extract usage
             if hasattr(provider, 'get_token_usage'):

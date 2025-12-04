@@ -12,7 +12,7 @@ class Orchestrator:
     def __init__(self, model_name: str = "gemini-2.5-flash", verbose: bool = True, event_callback: Optional[Callable[[Dict], None]] = None, theme: str = "cat", session_id: Optional[str] = None, user_id: Optional[str] = None, db_manager: Optional[DatabaseManager] = None):
         self.verbose = verbose
         self.model_name = model_name
-        self.personality_manager = PersonalityManager()
+        self.personality_manager = PersonalityManager(db_manager=db_manager)
         self.event_callback = event_callback
         self.theme = theme
         # waiting_for_clarification removed - now using DB state
@@ -27,7 +27,7 @@ class Orchestrator:
         
         # Create a simple model instance for generating one-liners
         # We can use the provider for this now
-        self._one_liner_provider = GeminiProvider(model_name=model_name)
+        self._one_liner_provider = GeminiProvider(model_name="gemini-2.5-flash-lite")
         
         # Initialize tool definitions
         self.tool_definitions = ToolDefinitions(self)

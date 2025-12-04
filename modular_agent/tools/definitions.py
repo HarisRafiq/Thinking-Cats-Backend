@@ -42,7 +42,7 @@ class ToolDefinitions:
                     fictional_name = personality.fictional_name or expert_name
             else:
                 # Dynamic personality
-                personality, usage = self.orchestrator.personality_manager.create_dynamic_personality(expert_name, self.orchestrator._one_liner_provider, theme=self.orchestrator.theme)
+                personality, usage = await self.orchestrator.personality_manager.create_dynamic_personality(expert_name, self.orchestrator._one_liner_provider, theme=self.orchestrator.theme)
                 
                 # Log usage for dynamic personality generation
                 if usage['total_tokens'] > 0:
