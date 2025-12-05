@@ -90,14 +90,23 @@ class DatabaseManager:
         user = await self.get_user_by_id(user_id)
         if user:
             last_reset = user.get("usage_stats", {}).get("last_reset_date")
+            needs_reset = False
+            
             if last_reset:
                 try:
                     last_reset_date = datetime.fromisoformat(last_reset).date()
-                    if datetime.utcnow().date() > last_reset_date:
-                        await self.reset_daily_limits(user_id)
-                except ValueError:
-                    # Handle legacy or invalid date format
-                    pass
+                    current_date = datetime.utcnow().date()
+                    if current_date > last_reset_date:
+                        needs_reset = True
+                except (ValueError, TypeError):
+                    # Invalid date format - treat as missing and reset
+                    needs_reset = True
+            else:
+                # Missing last_reset_date - initialize it by resetting
+                needs_reset = True
+            
+            if needs_reset:
+                await self.reset_daily_limits(user_id)
 
         await self.db.users.update_one(
             {"_id": ObjectId(user_id)},
@@ -132,23 +141,34 @@ class DatabaseManager:
         
         # Check for daily reset
         last_reset = usage.get("last_reset_date")
+        needs_reset = False
+        
         if last_reset:
             try:
                 last_reset_date = datetime.fromisoformat(last_reset).date()
-                if datetime.utcnow().date() > last_reset_date:
-                    # Reset needed - we can do it lazily here or assume it will be done
-                    # Let's do it here to be safe and allow the message
-                    await self.reset_daily_limits(user_id)
-                    return True
-            except ValueError:
-                pass
+                current_date = datetime.utcnow().date()
+                if current_date > last_reset_date:
+                    needs_reset = True
+            except (ValueError, TypeError):
+                # Invalid date format - treat as missing and reset
+                needs_reset = True
+        else:
+            # Missing last_reset_date - initialize it by resetting
+            needs_reset = True
+        
+        if needs_reset:
+            await self.reset_daily_limits(user_id)
+            # After reset, daily_count is 0, so we can allow the message
+            return True
         
         daily_count = usage.get("daily_message_count", 0)
         
-        # Hardcoded limits for now - move to config later
+        # Limits are configurable via environment variables
+        FREE_LIMIT = int(os.getenv("DAILY_LIMIT_FREE", "50"))
+        PRO_LIMIT = int(os.getenv("DAILY_LIMIT_PRO", "500"))
         LIMITS = {
-            "free": 50,
-            "pro": 500
+            "free": FREE_LIMIT,
+            "pro": PRO_LIMIT
         }
         
         limit = LIMITS.get(tier, 50)

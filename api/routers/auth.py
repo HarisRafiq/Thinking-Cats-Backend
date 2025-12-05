@@ -1,3 +1,4 @@
+import os
 from datetime import timedelta
 from typing import Dict, Any
 from fastapi import APIRouter, HTTPException, Depends
@@ -135,6 +136,15 @@ async def login_google(request: AuthRequest, db_manager = Depends(get_db_manager
             }
         )
     
+    # Calculate limits based on subscription tier
+    tier = user.get("subscription_tier", "free")
+    daily_limit = int(os.getenv("DAILY_LIMIT_PRO", "500")) if tier == "pro" else int(os.getenv("DAILY_LIMIT_FREE", "50"))
+    
+    # Add limits object with all limits
+    user["limits"] = {
+        "daily_limit": daily_limit
+    }
+
     return {
         "access_token": access_token, 
         "token_type": "bearer",
@@ -143,8 +153,18 @@ async def login_google(request: AuthRequest, db_manager = Depends(get_db_manager
 
 @router.get("/me")
 async def get_current_user_info(current_user: Dict[str, Any] = Depends(get_current_user)):
-    """Get current user information with usage stats."""
+    """Get current user information with usage stats and limits."""
     user = dict(current_user)
     user['id'] = str(user['_id'])
     del user['_id']
+    
+    # Calculate limits based on subscription tier
+    tier = user.get("subscription_tier", "free")
+    daily_limit = int(os.getenv("DAILY_LIMIT_PRO", "500")) if tier == "pro" else int(os.getenv("DAILY_LIMIT_FREE", "50"))
+    
+    # Add limits object with all limits
+    user["limits"] = {
+        "daily_limit": daily_limit
+    }
+    
     return user
