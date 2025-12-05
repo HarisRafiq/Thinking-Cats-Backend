@@ -57,8 +57,8 @@ def test_orchestrator_model():
     orch = Orchestrator(verbose=False)
     
     print(f"One Liner Provider Model: {orch._one_liner_provider.model_name}")
-    assert orch._one_liner_provider.model_name == "gemini-2.5-flash-lite"
-    print("PASS: Orchestrator uses gemini-2.5-flash-lite for one-liners")
+    assert orch._one_liner_provider.model_name == "gemini-2.5-flash"
+    print("PASS: Orchestrator uses gemini-2.5-flash for one-liners")
 
 if __name__ == "__main__":
     asyncio.run(test_caching())

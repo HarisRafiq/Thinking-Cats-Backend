@@ -27,7 +27,7 @@ class Orchestrator:
         
         # Create a simple model instance for generating one-liners
         # We can use the provider for this now
-        self._one_liner_provider = GeminiProvider(model_name="gemini-2.5-flash-lite")
+        self._one_liner_provider = GeminiProvider(model_name="gemini-2.5-flash")
         
         # Initialize tool definitions
         self.tool_definitions = ToolDefinitions(self)
