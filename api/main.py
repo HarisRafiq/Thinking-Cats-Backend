@@ -16,7 +16,7 @@ from api.routers import auth, chat, sessions, admin
 app = FastAPI(title="Multi-Agent Chat API")
 
 # CORS
-cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:3001")
+cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:3001,http://localhost:5173")
 origins = [origin.strip() for origin in cors_origins.split(",")]
 app.add_middleware(
     CORSMiddleware,

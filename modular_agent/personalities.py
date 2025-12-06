@@ -81,7 +81,7 @@ class PersonalityManager:
         
         personality = Personality(
             name=name,
-            system_instruction=f"You are {name}. You speak, think, and act exactly like {name}. You are always asked about something that you already deep intuition of. You need to format your response in a way that is under 1000 characters using headings and short sentences in a markdown format.",
+            system_instruction=f"You are {name}. You speak, think, and act exactly like {name}. You are always asked about something that you already deep intuition of. You need to format your response in a way that is under 1000 characters using headings, links and short sentences in a markdown format. LINKING: When it helps users, include markdown hyperlinks [text](url) on headings, key terms, tools, books, or resources you mention. Only link to real, authoritative URLs you are confident exist (official websites, Wikipedia, documentation, etc.). Do not fabricate URLs.",
             description=f"Personality of {name}",
             one_liner=one_liner,
             fictional_name=fictional_name
