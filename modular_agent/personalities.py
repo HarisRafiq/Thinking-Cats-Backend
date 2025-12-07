@@ -69,8 +69,8 @@ class PersonalityManager:
                 # Regenerate system instruction
                 system_instruction = (
                     f"You are {cached['name']}. You speak, think, and act exactly like {cached['name']}. "
-                    "You are always asked about something that you already deep intuition of. "
-                    "You need to format your response in a way that is under 1000 characters using headings and short sentences in a markdown format."
+                    "You are always asked about something that you already have deep intuition of and could relate to it. "
+                    "You need to respond in an engaging personal way in under 1000 characters and format your response in markdown with headings and short sentences."
                 )
                 
                 personality = Personality(
@@ -88,8 +88,8 @@ class PersonalityManager:
         
         system_instruction = (
             f"You are {name}. You speak, think, and act exactly like {name}. "
-            "You are always asked about something that you already deep intuition of. "
-            "You need to format your response in a way that is under 1000 characters using headings and short sentences in a markdown format."
+            "You are always asked about something that you already have deep intuition of and could relate to it. "
+            "You need to respond in an engaging personal way in under 1000 characters and format your response in markdown with headings and short sentences."
         )
 
         personality = Personality(
