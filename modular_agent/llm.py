@@ -60,6 +60,16 @@ class GeminiProvider(LLMProvider):
         model = self._get_model(tools, system_instruction)
         return await model.generate_content_async(prompt)
     
+    async def generate(
+        self,
+        prompt: Union[str, List[Any]],
+        system_instruction: Optional[str] = None
+    ) -> str:
+        """Simple async generate that returns just the text."""
+        model = self._get_model(tools=None, system_instruction=system_instruction)
+        response = await model.generate_content_async(prompt)
+        return response.text if response.text else ""
+    
     def get_token_usage(self, response: Any) -> Dict[str, int]:
         usage = {
             'input_tokens': 0,
@@ -76,3 +86,24 @@ class GeminiProvider(LLMProvider):
             # This handles models like gemini-2.0-flash-thinking-exp where thinking tokens are included in total but not separated
             usage['thinking_tokens'] = max(0, usage['total_tokens'] - (usage['input_tokens'] + usage['output_tokens']))
         return usage
+
+    async def generate_stream(
+        self,
+        prompt: Union[str, List[Any]],
+        system_instruction: Optional[str] = None
+    ):
+        """
+        Generates content with streaming for real-time responses.
+        Yields chunks as they arrive.
+        """
+        model = self._get_model(tools=None, system_instruction=system_instruction)
+        
+        response = await model.generate_content_async(
+            prompt,
+            stream=True
+        )
+        
+        async for chunk in response:
+            if chunk.text:
+                yield {"text": chunk.text}
+

@@ -1,4 +1,4 @@
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pydantic import BaseModel
 from modular_agent.config import DEFAULT_MODEL
 
@@ -33,3 +33,7 @@ class UpdateUserStatusRequest(BaseModel):
 
 class UpdateUserTierRequest(BaseModel):
     tier: str
+
+# =====================
+# NOTE: Artifact schemas are defined inline in routers/artifacts.py for simplicity
+# The router uses: GenerateRequest, UpdateRequest

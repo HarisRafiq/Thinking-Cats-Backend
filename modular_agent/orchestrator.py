@@ -245,7 +245,10 @@ class Orchestrator:
         # Construct prompt that instructs orchestrator to only use tools, never generate text
         prompt = (
             f"User input: {user_input}\n\n"
-            "Your job is to create a compelling report on the given user prompt. You have the context history of the conversation for reference. You have the ability to summon any famous personality from history or real world to help you finish up the report."
+            "Your job is to coordinate experts to address the user's request. "
+            "Analyze the user's input in the context of the conversation history. "
+            "If it's a follow-up question, maintain the current topic and context. "
+            "You have the ability to summon any famous personality from history or real world to help you."
         )
         response, usage = await self.agent.chat(prompt)
         self._log_usage_background(usage, model=self.model_name, prompt=prompt, response=response)

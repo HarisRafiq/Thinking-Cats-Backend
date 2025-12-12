@@ -1,6 +1,7 @@
 import os
 import asyncio
-from typing import List, Dict, Any, Optional
+import difflib
+from typing import List, Dict, Any, Optional, Tuple
 from motor.motor_asyncio import AsyncIOMotorClient
 from bson import ObjectId
 from datetime import datetime
@@ -610,3 +611,301 @@ class DatabaseManager:
             {"$set": data},
             upsert=True
         )
+
+    # =====================
+    # Artifact Methods (Simplified)
+    # =====================
+    # Schema: artifacts = {_id, user_id, content, status, created_at, updated_at}
+    # Schema: artifact_versions = {_id, artifact_id, session_id, content, created_at}
+    
+    async def create_artifact(self, user_id: str) -> str:
+        """Creates a new empty artifact."""
+        if self.db is None:
+            await self.connect()
+        
+        artifact = {
+            "user_id": user_id,
+            "content": "",
+            "status": "draft",  # draft, generating, published
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow()
+        }
+        
+        result = await self.db.artifacts.insert_one(artifact)
+        return str(result.inserted_id)
+
+    async def get_artifact(self, artifact_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves an artifact by ID."""
+        if self.db is None:
+            await self.connect()
+        
+        try:
+            artifact = await self.db.artifacts.find_one({"_id": ObjectId(artifact_id)})
+            if artifact:
+                artifact['artifact_id'] = str(artifact['_id'])
+                del artifact['_id']
+            return artifact
+        except Exception as e:
+            print(f"Error retrieving artifact {artifact_id}: {e}")
+            return None
+
+    async def get_user_artifacts(self, user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Retrieves all artifacts for a user with version count."""
+        if self.db is None:
+            await self.connect()
+        
+        # Get artifacts
+        cursor = self.db.artifacts.find({"user_id": user_id}).sort("updated_at", -1).limit(limit)
+        artifacts = await cursor.to_list(length=limit)
+        
+        # Get version counts in one aggregation
+        artifact_ids = [a['_id'] for a in artifacts]
+        version_counts = {}
+        if artifact_ids:
+            pipeline = [
+                {"$match": {"artifact_id": {"$in": [str(aid) for aid in artifact_ids]}}},
+                {"$group": {"_id": "$artifact_id", "count": {"$sum": 1}}}
+            ]
+            async for doc in self.db.artifact_versions.aggregate(pipeline):
+                version_counts[doc['_id']] = doc['count']
+        
+        for artifact in artifacts:
+            artifact['artifact_id'] = str(artifact['_id'])
+            artifact['version_count'] = version_counts.get(artifact['artifact_id'], 0)
+            del artifact['_id']
+        
+        return artifacts
+
+    async def update_artifact(self, artifact_id: str, content: str, status: Optional[str] = None) -> bool:
+        """Updates artifact content and optionally status."""
+        if self.db is None:
+            await self.connect()
+        
+        update = {
+            "content": content,
+            "updated_at": datetime.utcnow()
+        }
+        if status:
+            update["status"] = status
+        
+        result = await self.db.artifacts.update_one(
+            {"_id": ObjectId(artifact_id)},
+            {"$set": update}
+        )
+        return result.modified_count > 0
+
+    async def set_artifact_status(self, artifact_id: str, status: str) -> bool:
+        """Sets artifact status (draft, generating, published)."""
+        if self.db is None:
+            await self.connect()
+        
+        result = await self.db.artifacts.update_one(
+            {"_id": ObjectId(artifact_id)},
+            {"$set": {"status": status, "updated_at": datetime.utcnow()}}
+        )
+        return result.modified_count > 0
+
+    async def delete_artifact(self, artifact_id: str, user_id: str) -> bool:
+        """Deletes artifact and all its versions."""
+        if self.db is None:
+            await self.connect()
+        
+        # Delete versions first
+        await self.db.artifact_versions.delete_many({"artifact_id": artifact_id})
+        
+        # Delete artifact
+        result = await self.db.artifacts.delete_one({
+            "_id": ObjectId(artifact_id),
+            "user_id": user_id
+        })
+        return result.deleted_count > 0
+
+    # =====================
+    # Artifact Version Methods
+    # =====================
+    
+    async def create_artifact_version(self, artifact_id: str, session_id: str, content: str) -> str:
+        """Creates a version snapshot linked to a session."""
+        if self.db is None:
+            await self.connect()
+        
+        version = {
+            "artifact_id": artifact_id,
+            "session_id": session_id,
+            "content": content,
+            "version_type": "generation",  # generation = from session
+            "created_at": datetime.utcnow()
+        }
+        
+        result = await self.db.artifact_versions.insert_one(version)
+        
+        # Update artifact timestamp
+        await self.db.artifacts.update_one(
+            {"_id": ObjectId(artifact_id)},
+            {"$set": {"updated_at": datetime.utcnow()}}
+        )
+        
+        return str(result.inserted_id)
+
+    async def create_edit_version(
+        self, 
+        artifact_id: str, 
+        content: str, 
+        edit_instruction: str,
+        plan_summary: str
+    ) -> str:
+        """
+        Creates a version snapshot for an AI edit.
+        Edit versions are like 'commits' - each captures a meaningful change.
+        """
+        if self.db is None:
+            await self.connect()
+        
+        version = {
+            "artifact_id": artifact_id,
+            "content": content,
+            "version_type": "edit",  # edit = from AI editing
+            "edit_instruction": edit_instruction,  # What the user asked for
+            "plan_summary": plan_summary,  # What the AI did (commit message)
+            "created_at": datetime.utcnow()
+        }
+        
+        result = await self.db.artifact_versions.insert_one(version)
+        
+        # Update artifact timestamp
+        await self.db.artifacts.update_one(
+            {"_id": ObjectId(artifact_id)},
+            {"$set": {"updated_at": datetime.utcnow()}}
+        )
+        
+        return str(result.inserted_id)
+
+    async def get_artifact_versions(self, artifact_id: str) -> List[Dict[str, Any]]:
+        """Gets all versions for an artifact with session/edit info."""
+        if self.db is None:
+            await self.connect()
+        
+        cursor = self.db.artifact_versions.find(
+            {"artifact_id": artifact_id}
+        ).sort("created_at", -1)
+        
+        versions = await cursor.to_list(length=100)
+        
+        # Get session problems for generation versions
+        session_ids = list(set(
+            v.get("session_id") for v in versions 
+            if v.get("session_id") and v.get("version_type", "generation") == "generation"
+        ))
+        session_map = {}
+        if session_ids:
+            for sid in session_ids:
+                try:
+                    session = await self.db.sessions.find_one(
+                        {"_id": ObjectId(sid)},
+                        {"problem": 1}
+                    )
+                    if session:
+                        session_map[sid] = session.get("problem", "")[:100]
+                except:
+                    pass
+        
+        for v in versions:
+            v['version_id'] = str(v['_id'])
+            v['version_type'] = v.get('version_type', 'generation')  # Default for old versions
+            
+            if v['version_type'] == 'generation':
+                v['session_problem'] = session_map.get(v.get('session_id'), "")
+            else:
+                # Edit version - use plan_summary as the display text
+                v['session_problem'] = v.get('plan_summary', v.get('edit_instruction', 'AI Edit'))
+            
+            del v['_id']
+        
+        return versions
+
+    async def get_version_diff(
+        self, 
+        artifact_id: str, 
+        version_id_1: str, 
+        version_id_2: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Gets diff between two versions of an artifact.
+        If version_id_2 is None, compares against current artifact content.
+        
+        Returns:
+            {
+                "diff": unified diff string,
+                "added_lines": int,
+                "removed_lines": int,
+                "changed_lines": int
+            }
+        """
+        if self.db is None:
+            await self.connect()
+        
+        # Get version 1
+        version1 = await self.db.artifact_versions.find_one({"_id": ObjectId(version_id_1)})
+        if not version1:
+            return {"error": "Version 1 not found"}
+        
+        content1 = version1.get("content", "")
+        
+        # Get version 2 or current artifact
+        if version_id_2:
+            version2 = await self.db.artifact_versions.find_one({"_id": ObjectId(version_id_2)})
+            if not version2:
+                return {"error": "Version 2 not found"}
+            content2 = version2.get("content", "")
+        else:
+            artifact = await self.get_artifact(artifact_id)
+            if not artifact:
+                return {"error": "Artifact not found"}
+            content2 = artifact.get("content", "")
+        
+        # Generate unified diff
+        lines1 = content1.splitlines(keepends=True)
+        lines2 = content2.splitlines(keepends=True)
+        
+        diff = list(difflib.unified_diff(
+            lines1,
+            lines2,
+            fromfile=f"Version {version_id_1[:8]}",
+            tofile=f"Version {version_id_2[:8] if version_id_2 else 'Current'}",
+            lineterm=''
+        ))
+        
+        # Count changes
+        added_lines = sum(1 for line in diff if line.startswith('+') and not line.startswith('+++'))
+        removed_lines = sum(1 for line in diff if line.startswith('-') and not line.startswith('---'))
+        changed_lines = min(added_lines, removed_lines)  # Approximate
+        
+        return {
+            "diff": ''.join(diff),
+            "added_lines": added_lines,
+            "removed_lines": removed_lines,
+            "changed_lines": changed_lines,
+            "diff_lines": diff
+        }
+
+    async def get_session_context(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Gets session messages and slides for artifact generation context."""
+        if self.db is None:
+            await self.connect()
+        
+        try:
+            session = await self.db.sessions.find_one(
+                {"_id": ObjectId(session_id)},
+                {"messages": 1, "slides": 1, "problem": 1}
+            )
+            if session:
+                return {
+                    "session_id": str(session['_id']),
+                    "problem": session.get("problem", ""),
+                    "messages": session.get("messages", [])[-20:],  # Last 20 messages
+                    "slides": session.get("slides", [])
+                }
+            return None
+        except Exception as e:
+            print(f"Error getting session context {session_id}: {e}")
+            return None
