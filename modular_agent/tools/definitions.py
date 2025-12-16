@@ -88,7 +88,7 @@ class ToolDefinitions:
                 "one_liner": one_liner  # Include for consistency
             })
             
-            # Create agent_response slide
+            # Create agent_response slide synchronously (await for consistent IDs)
             if self.orchestrator.db_manager and self.orchestrator.session_id:
                 # Generate temporary ID first for immediate event emission
                 import uuid

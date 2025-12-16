@@ -1,6 +1,8 @@
 from typing import List, Dict, Optional, Callable, Any
 import google.generativeai as genai
 import asyncio
+import json
+import re
 from .core import ModularAgent
 from .personalities import PersonalityManager
 from .llm import GeminiProvider
@@ -31,12 +33,17 @@ class Orchestrator:
         
         # Initialize tool definitions
         self.tool_definitions = ToolDefinitions(self)
+        
+        # Plan storage for current execution
+        self.current_plan = []  # List of {"expert": str, "question": str, "reason": str}
+        self.plan_executed = []  # List of expert names already executed
 
-        # Initialize the main orchestrator agent
+        # Initialize the main orchestrator agent (planner)
+        # Only has ask_clarification tool - planning phase decides experts
         self.agent = ModularAgent(
             provider=self.provider,
             personality="moderator",
-            tools=[self.tool_definitions.consult_expert, self.tool_definitions.ask_clarification],
+            tools=[self.tool_definitions.ask_clarification],
             verbose=verbose
         )
 
@@ -72,8 +79,8 @@ class Orchestrator:
                     cost
                 )
                 
-                # Log detailed LLM call
-                await self.db_manager.log_llm_call({
+                # Log detailed LLM call (synchronous, non-blocking)
+                self.db_manager.log_llm_call({
                     "user_id": self.user_id,
                     "session_id": self.session_id,
                     "model": model,
@@ -109,21 +116,17 @@ class Orchestrator:
             if question:
                 # Create a new Q&A user_message slide directly
                 try:
-                    import uuid
-                    temp_id = str(uuid.uuid4())
-                    
                     slide = {
                         "type": "user_message",
                         "question": question,
-                        "answer": content,
-                        "id": temp_id
+                        "answer": content
                     }
                     
-                    # Create slide in DB synchronously
+                    # Await slide creation to get definitive ID
                     slide_id = await self.db_manager.add_slide(self.session_id, slide)
-                    slide["id"] = slide_id  # Update with the real MongoDB ObjectId
+                    slide["id"] = slide_id
                     
-                    # Emit slide_added event with the real MongoDB ID
+                    # Emit slide_added event with definitive MongoDB ID
                     await self._emit_event({
                         "type": "slide_added",
                         "slide": slide
@@ -145,70 +148,238 @@ class Orchestrator:
             
             # Continue to let the agent process the answer
         else:
-            # Generate temporary ID first for immediate event emission
-            import uuid
-            temp_id = str(uuid.uuid4())
-            
             slide = {
                 "type": "user_message",
-                "content": content,
-                "id": temp_id  # Temporary ID, will be updated by background task
+                "content": content
             }
             
-            # Create slide in DB in background (non-blocking)
-            async def _create_slide_background():
-                try:
-                    slide_id = await self.db_manager.add_slide(self.session_id, slide)
-                    # Update slide ID if different from temp (though usually same)
-                    if slide_id != temp_id:
-                        slide["id"] = slide_id
-                except Exception as e:
-                    if self.verbose:
-                        print(f"[Orchestrator] Error creating slide in DB: {e}")
-                    # Keep temporary ID if DB write fails
-            
-            # Start background task for slide creation (fire-and-forget)
-            asyncio.create_task(_create_slide_background())
-            
-            # Emit slide_added event immediately (non-blocking)
-            await self._emit_event({
-                "type": "slide_added",
-                "slide": slide
-            })
+            # Await slide creation to get definitive ID before emitting
+            try:
+                slide_id = await self.db_manager.add_slide(self.session_id, slide)
+                slide["id"] = slide_id
+                
+                # Emit slide_added event with definitive ID
+                await self._emit_event({
+                    "type": "slide_added",
+                    "slide": slide
+                })
+            except Exception as e:
+                if self.verbose:
+                    print(f"[Orchestrator] Error creating slide: {e}")
 
     async def _emit_event(self, event_data: Dict):
-        """Helper method to emit events, handling null callback. Non-blocking DB writes."""
+        """Helper method to emit events via callback only (ephemeral SSE, no DB storage)."""
         # Add timestamp if not present
         if "timestamp" not in event_data:
             import time
             event_data["timestamp"] = time.time()
 
-        # Emit event immediately to callback (non-blocking)
+        # Emit event immediately to callback
         if self.event_callback:
             # Check if callback is async
             if asyncio.iscoroutinefunction(self.event_callback):
                 await self.event_callback(event_data)
             else:
                 self.event_callback(event_data)
+
+    async def generate_plan(self, user_input: str) -> List[Dict[str, str]]:
+        """
+        Generates an execution plan with a list of experts and their questions.
+        Does NOT call experts yet - only decides who to call and why.
         
-        # Save event to DB in background task (fire-and-forget pattern)
-        # This prevents blocking the event emission path
+        Uses current query and previous questions from all previous plans to avoid repetition.
+        
+        Returns:
+            List of dicts with format: {"expert": str, "question": str, "reason": str}
+        """
+        if self.verbose:
+            print(f"\n[Orchestrator] Generating plan for input: {user_input}")
+        
+        # Emit thinking event
+        await self._emit_event({
+            "type": "orchestrator_thinking",
+            "label": "Thinking Cats are planning..."
+        })
+        
+        # Fetch conversation history for context
+        conversation_history = await self._get_conversation_context(limit=20)
+        
+        # Build context string
+        context_section = ""
+        if conversation_history:
+            context_section = f"\n\nConversation History (Context for follow-up):\n{conversation_history}\n"
+        
+        # Fetch previous questions from slides (not questions_answered array)
+        previous_questions = []
         if self.db_manager and self.session_id:
-            async def _save_event_background():
-                try:
-                    await self.db_manager.add_event(self.session_id, event_data)
-                except Exception as e:
-                    # Log error but don't block event emission
-                    if self.verbose:
-                        print(f"[Orchestrator] Error saving event to DB (non-critical): {e}")
+            previous_questions = await self.db_manager.get_answered_questions(
+                self.session_id, limit=50
+            )
+        
+        # Build context about previous questions to avoid repetition
+        questions_context = ""
+        if previous_questions:
+            questions_text = "\n".join(f"- {q}" for q in previous_questions[-50:])  # Last 50 questions
+            questions_context = f"\n\nQuestions already covered in previous plans (do not repeat unless new angle):\n{questions_text}\n"
+        
+        # Construct prompt for plan generation
+        prompt = (
+            f"Current User Input: {user_input}{context_section}{questions_context}\n\n"
+            "Your job is to create a plan to address the user's request by summoning experts. "
+            "Analyze the user's input and create a plan with relevant experts who can discuss or help with the topic.\n\n"
+            "IMPORTANT GUIDELINES:\n"
+            "- If the user's request is clear enough to identify a topic or theme, create a plan immediately. Do NOT ask for clarification.\n"
+            "- Only ask for clarification if the input is truly ambiguous and you cannot identify ANY topic or theme to discuss.\n"
+            "- If the user mentions orchestrating experts, discussing experts, or wants expert opinions, that IS a clear request - create a plan with relevant experts.\n"
+            "- If the user asks about a concept, idea, problem, or topic, create a plan with experts who can discuss it.\n\n"
+            "Return a JSON array with the experts you would summon. Each expert should have:\n"
+            '- "expert": The name of the famous personality or expert to consult\n'
+            '- "question": The specific question to ask this expert\n'
+            '- "reason": Why this expert is chosen for this task\n\n'
+            "Example format:\n"
+            '[\n'
+            '  {"expert": "Steve Jobs", "question": "How would you approach this problem?", "reason": "Innovation and product thinking"},\n'
+            '  {"expert": "Marie Curie", "question": "What scientific principles apply here?", "reason": "Deep scientific knowledge"}\n'
+            "]\n\n"
+            "Return ONLY the JSON array, no additional text."
+        )
+        
+        # Clear agent context to avoid duplication since we provide full history in prompt
+        self.agent.context.clear()
+        
+        response, usage = await self.agent.chat(prompt)
+        self._log_usage_background(usage, model=self.model_name, prompt=prompt, response=response)
+        
+        # Check if agent requested clarification (interruption)
+        if response == "WAITING_FOR_USER_INPUT":
+            if self.verbose:
+                print("[Orchestrator] Agent requested clarification - returning empty plan")
+            # Return empty plan - clarification has already been emitted via events
+            # The user will respond, and we'll call generate_plan() again
+            self.current_plan = []
+            self.plan_executed = []
+            return []
+        
+        # Parse the JSON plan from response
+        plan = []
+        try:
+            # Try to extract JSON from response (might have extra text)
+            json_match = re.search(r'\[.*\]', response, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+                parsed_items = json.loads(json_str)
+                
+                # Validate plan structure and add valid items
+                for item in parsed_items:
+                    if isinstance(item, dict) and "expert" in item and "question" in item:
+                        plan.append(item)
+                    else:
+                        if self.verbose:
+                            print(f"[Orchestrator] Skipping invalid plan item: {item}")
+                
+                if self.verbose:
+                    print(f"[Orchestrator] Generated plan with {len(plan)} experts")
+            else:
+                if self.verbose:
+                    print(f"[Orchestrator] No JSON found in response: {response[:200]}")
+        except json.JSONDecodeError as e:
+            if self.verbose:
+                print(f"[Orchestrator] Failed to parse plan JSON: {e}")
+        
+        # Store plan and reset execution tracking
+        self.current_plan = plan
+        self.plan_executed = []
+        
+        # Emit plan generated event
+        await self._emit_event({
+            "type": "plan_generated",
+            "plan": plan
+        })
+        
+        return plan
+
+    async def execute_plan(self) -> str:
+        """
+        Executes the current plan by consulting each expert in sequence.
+        
+        Returns:
+            Summary of execution status
+        """
+        if not self.current_plan:
+            if self.verbose:
+                print("[Orchestrator] No plan to execute")
+            return "No plan generated"
+        
+        if self.verbose:
+            print(f"\n[Orchestrator] Executing plan with {len(self.current_plan)} experts")
+        
+        # Emit execution started event
+        await self._emit_event({
+            "type": "plan_execution_started",
+            "total_experts": len(self.current_plan)
+        })
+        
+        # Execute each expert consultation
+        for idx, expert_item in enumerate(self.current_plan):
+            expert_name = expert_item.get("expert", "")
+            question = expert_item.get("question", "")
+            reason = expert_item.get("reason", "")
             
-            # Create background task for DB write
-            asyncio.create_task(_save_event_background())
+            if not expert_name or not question:
+                if self.verbose:
+                    print(f"[Orchestrator] Skipping invalid plan item: {expert_item}")
+                continue
+            
+            try:
+                # Emit progress event
+                await self._emit_event({
+                    "type": "plan_step_executing",
+                    "step": idx + 1,
+                    "total": len(self.current_plan),
+                    "expert": expert_name,
+                    "reason": reason
+                })
+                
+                # Consult the expert
+                await self.tool_definitions.consult_expert(expert_name, question)
+                
+                # Track execution
+                self.plan_executed.append(expert_name)
+                
+                # Emit progress event
+                await self._emit_event({
+                    "type": "plan_step_completed",
+                    "step": idx + 1,
+                    "total": len(self.current_plan),
+                    "expert": expert_name
+                })
+                
+            except Exception as e:
+                if self.verbose:
+                    print(f"[Orchestrator] Error executing plan step for {expert_name}: {e}")
+                
+                await self._emit_event({
+                    "type": "plan_step_error",
+                    "expert": expert_name,
+                    "error": str(e)
+                })
+        
+        # Emit execution completed event
+        await self._emit_event({
+            "type": "plan_execution_completed",
+            "executed": len(self.plan_executed),
+            "total": len(self.current_plan)
+        })
+        
+        return f"Executed plan with {len(self.plan_executed)}/{len(self.current_plan)} experts"
 
     async def process(self, user_input: str) -> str:
         """
-        Processes user input by deciding whether to ask for clarification or summon experts.
-        The orchestrator does NOT generate text responses - it only uses tools.
+        Two-phase process:
+        1. PLANNING PHASE: Generate a plan with list of experts
+        2. EXECUTION PHASE: Execute the plan by consulting each expert
+        
+        Returns a summary of execution.
         """
         if self.verbose:
             print(f"\n[Orchestrator] Received input: {user_input}")
@@ -227,174 +398,123 @@ class Orchestrator:
                         print(f"[Orchestrator] Handling input as clarification response")
         
         # Update status to processing
-        # Explicitly clear pending_interaction when processing a response (user has answered)
         if self.db_manager and self.session_id:
             await self.db_manager.update_session_status(self.session_id, "processing", None)
 
         # Create user_message slide for the input
-        # If it's a clarification response, this method handles the conversion
         await self._create_user_message_slide(user_input, is_clarification_response=is_clarification_response, pending_interaction=pending_interaction)
 
-
-        # Emit thinking event
-        await self._emit_event({
-            "type": "orchestrator_thinking",
-            "label": "Thinking Cats are planning..."
-        })
+        # ===== PHASE 1: PLANNING =====
+        # Generate the execution plan (experts + questions + reasons)
+        try:
+            plan = await self.generate_plan(user_input)
+        except Exception as e:
+            if self.verbose:
+                print(f"[Orchestrator] Error generating plan: {e}")
+            
+            await self._emit_event({
+                "type": "orchestrator_error",
+                "phase": "planning",
+                "error": str(e)
+            })
+            
+            if self.db_manager and self.session_id:
+                await self.db_manager.update_session_status(self.session_id, "idle")
+            
+            return f"Error generating plan: {str(e)}"
         
-        # Construct prompt that instructs orchestrator to only use tools, never generate text
-        prompt = (
-            f"User input: {user_input}\n\n"
-            "Your job is to create a compelling report on the given user prompt. You have the context history of the conversation for reference. You have the ability to summon any famous personality from history or real world to help you finish up the report."
-        )
-        response, usage = await self.agent.chat(prompt)
-        self._log_usage_background(usage, model=self.model_name, prompt=prompt, response=response)
+        # If plan is empty or no experts were chosen, check if clarification was requested
+        if not plan:
+            if self.verbose:
+                print("[Orchestrator] No experts in plan")
+            
+            # Check if session is waiting for input (clarification was requested)
+            if self.db_manager and self.session_id:
+                session = await self.db_manager.get_session(self.session_id)
+                if session and session.get("status") == "waiting_for_input":
+                    # Clarification was requested - keep status as waiting_for_input
+                    if self.verbose:
+                        print("[Orchestrator] Clarification requested - keeping status as waiting_for_input")
+                    return "Waiting for user clarification"
+                else:
+                    # No clarification - set to idle
+                    await self.db_manager.update_session_status(self.session_id, "idle")
+            
+            return "No experts were selected for this query"
         
-        # If we reached here without raising AgentInterruption (i.e. no clarification asked),
-        # we are done with this turn. Set status to idle.
+        # ===== PHASE 2: EXECUTION =====
+        # Execute the plan by consulting each expert
+        try:
+            result = await self.execute_plan()
+        except Exception as e:
+            if self.verbose:
+                print(f"[Orchestrator] Error executing plan: {e}")
+            
+            await self._emit_event({
+                "type": "orchestrator_error",
+                "phase": "execution",
+                "error": str(e)
+            })
+            
+            result = f"Error during execution: {str(e)}"
+        
+        # Set session to idle after execution completes
         if self.db_manager and self.session_id:
-             # Check if we are actually waiting for input (AgentInterruption would have been raised, but just in case)
-             # Only set to idle if we're not waiting for input
-             session = await self.db_manager.get_session(self.session_id)
-             if session and session.get("status") != "waiting_for_input":
-                 # If the agent just finished normally and we're not waiting for input, we are idle.
-                 await self.db_manager.update_session_status(self.session_id, "idle")
-
+            await self.db_manager.update_session_status(self.session_id, "idle")
         
-        # The orchestrator should not generate text responses, but if it does (fallback),
-        # we don't emit events or create slides for it since it's not supposed to happen.
-        # The agent's tool calls will have already emitted their events.
-        
-        return response
+        return result
 
     async def load_session_history(self):
-        """Loads session history from the database and hydrates the agent context."""
+        """
+        Simplified history loading - no longer needed for planning since generate_plan()
+        now derives questions directly from slides via get_answered_questions().
+        
+        Kept for backward compatibility but does nothing since planning no longer
+        relies on agent context.
+        """
+        if self.verbose:
+            print(f"[Orchestrator] load_session_history() called but no longer needed - planning derives from slides")
+
+    async def _get_conversation_context(self, limit: int = 15) -> str:
+        """
+        Retrieves recent conversation context from session slides.
+        Returns a formatted string of user inputs and expert questions.
+        """
         if not self.db_manager or not self.session_id:
-            return
+            return ""
             
-        session = await self.db_manager.get_session(self.session_id)
-        if not session:
-            return
+        try:
+            session = await self.db_manager.get_session(self.session_id)
+            if not session or "slides" not in session:
+                return ""
+                
+            slides = session.get("slides", [])
+            context_items = []
             
-        print(f"[Orchestrator] Loading history for session {self.session_id}")
-        
-        
-        # Combine messages and events into a single timeline
-        timeline = []
-        
-        # Add messages
-        if 'messages' in session:
-            for msg in session['messages']:
-                timeline.append({
-                    'type': 'message',
-                    'data': msg,
-                    'timestamp': msg.get('timestamp', 0)
-                })
+            # Process slides in order
+            for slide in slides:
+                slide_type = slide.get("type")
                 
-        # Add events
-        if 'events' in session:
-            for event in session['events']:
-                timeline.append({
-                    'type': 'event',
-                    'data': event,
-                    'timestamp': event.get('timestamp', 0)
-                })
-                
-        # Sort by timestamp
-        timeline.sort(key=lambda x: x['timestamp'])
-        
-        # Reconstruct context
-        self.agent.context.clear()
-        
-        # We don't need pending_clarification_response flag anymore for logic flow, 
-        # but we might need it to reconstruct the conversation correctly if we want to 
-        # simulate the function response.
-        # Actually, if the session status is 'waiting_for_input', the last item should be a clarification request.
-        # If we are loading history, we just replay what happened.
-        
-        pending_clarification_response = False
-
-        
-        for item in timeline:
-            if item['type'] == 'message':
-                msg = item['data']
-                if msg.get('role') == 'user':
-                    content = msg.get('content')
-                    
-                    # If we're waiting for a clarification response, add it as function response
-                    # Use just the answer (question already in context from clarification_request)
-                    if pending_clarification_response:
-                        from google.generativeai import protos
+                if slide_type == "user_message":
+                    if "question" in slide and "answer" in slide:
+                        # Q&A format
+                        context_items.append(f"User (Clarification): {slide['question']} -> {slide['answer']}")
+                    elif "content" in slide:
+                        context_items.append(f"User: {slide['content']}")
                         
-                        # Check if content is in old "Q: ... A: ..." format and extract answer
-                        answer_to_use = content
-                        if content.startswith("Q:") and "\nA:" in content:
-                            # Old format - extract just the answer for token efficiency
-                            parts = content.split("\nA:", 1)
-                            if len(parts) == 2:
-                                answer_to_use = parts[1].strip()
-                        # If there's a Q&A slide with this answer, we could use it, but content should work
-                        # (Q&A slides are for display, messages are for context)
-                        
-                        fn_response = protos.FunctionResponse(
-                            name='ask_clarification',
-                            response={'result': answer_to_use}
-                        )
-                        self.agent.context.add_function_response(fn_response)
-                        pending_clarification_response = False
-                    else:
-                        # For non-Q&A messages, use content as-is
-                        self.agent.context.add_user_message(content)
+                elif slide_type == "agent_response":
+                    expert = slide.get("sender", "Expert")
+                    question = slide.get("question", "")
+                    if question:
+                        context_items.append(f"Expert {expert} was asked: {question}")
             
-            elif item['type'] == 'event':
-                event = item['data']
-                event_type = event.get('type')
+            # Return last N items
+            if not context_items:
+                return ""
                 
-                if event_type == 'consult_start':
-                    # This corresponds to a function call by the model
-                    real_expert = event.get('expert')  # Real name (e.g., "Steve Jobs")
-                    fictional_name = event.get('fictional_name')  # Fictional name (e.g., "Steve Paws")
-                    question = event.get('question')
-                    
-                    # Restore the active expert mapping (real -> fictional)
-                    if real_expert and fictional_name:
-                        self.active_experts[real_expert] = fictional_name
-                    
-                    # Add model message with function call using REAL name
-                    # (The orchestrator uses real names internally)
-                    from google.generativeai import protos
-                    fn_call = protos.FunctionCall(
-                        name='consult_expert',
-                        args={'expert_name': real_expert, 'question': question}
-                    )
-                    self.agent.context.add_model_message("", function_call=fn_call)
-                    
-                elif event_type == 'consult_end':
-                    # This corresponds to a function response
-                    real_expert = event.get('expert')  # Real name
-                    response = event.get('response')
-                    
-                    # Function response uses REAL name (backend logic)
-                    from google.generativeai import protos
-                    fn_response = protos.FunctionResponse(
-                        name='consult_expert',
-                        response={'result': f"[{real_expert}]: {response}"}
-                    )
-                    self.agent.context.add_function_response(fn_response)
-                    
-                elif event_type == 'clarification_request':
-                    # This corresponds to an ask_clarification function call
-                    question = event.get('question')
-                    options = event.get('options', [])
-                    
-                    from google.generativeai import protos
-                    fn_call = protos.FunctionCall(
-                        name='ask_clarification',
-                        args={'question': question, 'options': options}
-                    )
-                    self.agent.context.add_model_message("", function_call=fn_call)
-                    
-                    # The next user message after this is the response to the clarification
-                    pending_clarification_response = True
-
-        print(f"[Orchestrator] History loaded. Context length: {len(self.agent.context)}")
+            return "\n".join(context_items[-limit:])
+            
+        except Exception as e:
+            if self.verbose:
+                print(f"[Orchestrator] Error getting conversation context: {e}")
+            return ""

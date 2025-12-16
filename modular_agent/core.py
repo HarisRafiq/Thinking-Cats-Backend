@@ -110,8 +110,8 @@ class ModularAgent:
                 self.total_tokens += usage['total_tokens']
                 
                 if self.verbose:
-                    print(f"\n[Token Usage] Input: {usage['input_tokens']}, Output: {usage['output_tokens']}, Total: {usage['total_tokens']}")
-                    print(f"[Cumulative Tokens] Input: {self.total_input_tokens}, Output: {self.total_output_tokens}, Total: {self.total_tokens}")
+                    print(f"\n[Token Usage] Input: {usage['input_tokens']}, Output: {usage['output_tokens']}, Thinking: {usage.get('thinking_tokens', 0)}, Total: {usage['total_tokens']}")
+                    print(f"[Cumulative Tokens] Input: {self.total_input_tokens}, Output: {self.total_output_tokens}, Thinking: {self.total_thinking_tokens}, Total: {self.total_tokens}")
                 
                 # Check if there are function calls to execute
                 function_calls = []
@@ -276,8 +276,8 @@ class ModularAgent:
         self.total_tokens += usage['total_tokens']
         
         if self.verbose:
-            print(f"\n[Token Usage] Input: {usage['input_tokens']}, Output: {usage['output_tokens']}, Total: {usage['total_tokens']}")
-            print(f"[Cumulative Tokens] Input: {self.total_input_tokens}, Output: {self.total_output_tokens}, Total: {self.total_tokens}")
+            print(f"\n[Token Usage] Input: {usage['input_tokens']}, Output: {usage['output_tokens']}, Thinking: {usage.get('thinking_tokens', 0)}, Total: {usage['total_tokens']}")
+            print(f"[Cumulative Tokens] Input: {self.total_input_tokens}, Output: {self.total_output_tokens}, Thinking: {self.total_thinking_tokens}, Total: {self.total_tokens}")
         
         return response.text, usage
 
