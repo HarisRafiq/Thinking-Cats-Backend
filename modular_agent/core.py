@@ -68,7 +68,7 @@ class ModularAgent:
         self.total_thinking_tokens = 0
         self.total_tokens = 0
 
-    async def chat(self, user_input: str) -> str:
+    async def chat(self, user_input: str, generation_config: Optional[Dict[str, Any]] = None) -> str:
         """
         Main conversational method using generate_content_async() with manual context management.
         """
@@ -94,10 +94,18 @@ class ModularAgent:
             system_instruction = self.current_personality.system_instruction
             tools = self.tool_manager.get_tools_for_gemini()
             
+            # Gemini does not support JSON mode with tools
+            if tools and generation_config and generation_config.get("response_mime_type") == "application/json":
+                if self.verbose:
+                    print("[ModularAgent] Warning: JSON mode is not supported with tools. Disabling JSON mode for this request.")
+                generation_config = generation_config.copy()
+                generation_config.pop("response_mime_type")
+            
             response = await self.provider.generate_content_async(
                 prompt=contents,
                 tools=tools,
-                system_instruction=system_instruction
+                system_instruction=system_instruction,
+                generation_config=generation_config
             )
             
             # Manual function calling loop
@@ -206,11 +214,17 @@ class ModularAgent:
                 # Build context for next iteration (includes function calls and responses we just added)
                 contents = self.context.build_api_context(include_current_user=False)
                 
+                # Gemini does not support JSON mode with tools
+                if tools and generation_config and generation_config.get("response_mime_type") == "application/json":
+                    generation_config = generation_config.copy()
+                    generation_config.pop("response_mime_type")
+
                 # Make next API call
                 response = await self.provider.generate_content_async(
                     prompt=contents,
                     tools=tools,
-                    system_instruction=system_instruction
+                    system_instruction=system_instruction,
+                    generation_config=generation_config
                 )
                 iteration += 1
             
@@ -234,10 +248,17 @@ class ModularAgent:
                 # Add reminder as user message
                 self.context.add_user_message("You made a malformed function call. Please ensure you are calling the tool correctly with valid JSON arguments.")
                 contents = self.context.build_api_context(include_current_user=False)
+                
+                # Gemini does not support JSON mode with tools
+                if tools and generation_config and generation_config.get("response_mime_type") == "application/json":
+                    generation_config = generation_config.copy()
+                    generation_config.pop("response_mime_type")
+
                 response = await self.provider.generate_content_async(
                     prompt=contents,
                     tools=tools,
-                    system_instruction=system_instruction
+                    system_instruction=system_instruction,
+                    generation_config=generation_config
                 )
                 if response.candidates and len(response.candidates) > 0:
                     for part in response.candidates[0].content.parts:
@@ -257,7 +278,7 @@ class ModularAgent:
         
         return final_response_text, current_usage
 
-    async def run(self, user_input: str) -> str:
+    async def run(self, user_input: str, generation_config: Optional[Dict[str, Any]] = None) -> str:
         """Single-shot execution (no history)."""
         system_instruction = self.current_personality.system_instruction
         tools = self.tool_manager.get_tools_for_gemini()
@@ -265,7 +286,8 @@ class ModularAgent:
         response = await self.provider.generate_content_async(
             prompt=user_input,
             tools=tools,
-            system_instruction=system_instruction
+            system_instruction=system_instruction,
+            generation_config=generation_config
         )
         
         # Track token usage

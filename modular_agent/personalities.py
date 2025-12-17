@@ -119,21 +119,20 @@ class PersonalityManager:
         
         try:
             prompt = (
-        f"For the famous person {name}, provide:\n"
-        f"1. A fictional {theme}-themed name inspired by the person’s real name."
-        f"Ensure it is clearly humorous, playful and legally safe. But it should be simple for readers to pick up the hint for real person.\n\n"
-        f"2. A concise one-liner why this person is best to answer the question. Be witty and funny."
-        f"Max 10 words.\n\n"
-        f"Format your response EXACTLY as:\n"
-        f"ONE_LINER: [the one-liner]\n"
-        f"FICTIONAL_NAME: [the fictional name]\n\n"
+                f"For the famous person {name}, provide:\n"
+                f"1. A fictional {theme}-themed name inspired by the person’s real name. "
+                f"Ensure it is clearly humorous, playful and legally safe. But it should be simple for readers to pick up the hint for real person.\n"
+                f"2. A concise one-liner to highlight this fictional characters achievements. Be witty and funny. Max 10 words.\n\n"
+                f"Return a JSON object with keys 'one_liner' and 'fictional_name'."
             )
+            
+            generation_config = {"response_mime_type": "application/json"}
             
             # Use provider to generate content
             if hasattr(provider, 'generate_content_async'):
-                response = await provider.generate_content_async(prompt)
+                response = await provider.generate_content_async(prompt, generation_config=generation_config)
             else:
-                response = provider.generate_content(prompt)
+                response = provider.generate_content(prompt, generation_config=generation_config)
             
             # Extract usage
             if hasattr(provider, 'get_token_usage'):
@@ -141,26 +140,21 @@ class PersonalityManager:
             
             text = response.text.strip()
             
-            # Parse the response
-            one_liner = None
-            fictional_name = None
+            # Parse the JSON response
+            import json
+            try:
+                data = json.loads(text)
+                one_liner = data.get('one_liner')
+                fictional_name = data.get('fictional_name')
+            except json.JSONDecodeError:
+                # Fallback if parsing failed
+                one_liner = None
+                fictional_name = None
             
-            for line in text.split('\n'):
-                if line.startswith('ONE_LINER:'):
-                    one_liner = line.replace('ONE_LINER:', '').strip().strip('"\'')
-                elif line.startswith('FICTIONAL_NAME:'):
-                    fictional_name = line.replace('FICTIONAL_NAME:', '').strip().strip('"\'')
-            
-            # Fallback if parsing failed
+            # Fallback if parsing failed or missing keys
             if not one_liner or not fictional_name:
-                # Try to extract from the response more flexibly
-                lines = [l.strip() for l in text.split('\n') if l.strip()]
-                if len(lines) >= 2:
-                    one_liner = lines[0].strip('"\'')
-                    fictional_name = lines[1].strip('"\'')
-                else:
-                    one_liner = f"Famous figure: {name}"
-                    fictional_name = name
+                one_liner = f"Famous figure: {name}"
+                fictional_name = name
             
             # Ensure we have valid values
             one_liner = one_liner[:100] if one_liner else f"Famous figure: {name}"

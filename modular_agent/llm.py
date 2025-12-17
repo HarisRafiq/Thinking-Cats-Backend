@@ -10,7 +10,8 @@ class LLMProvider(ABC):
     async def generate_content_async(self, 
                         prompt: Union[str, List[Any]], 
                         tools: Optional[List[Callable]] = None,
-                        system_instruction: Optional[str] = None) -> Any:
+                        system_instruction: Optional[str] = None,
+                        generation_config: Optional[Dict[str, Any]] = None) -> Any:
         """Generates content from the model asynchronously."""
         pass
     
@@ -30,34 +31,43 @@ class GeminiProvider(LLMProvider):
         self._current_tools = None
         self._current_system_instruction = None
         
-    def _get_model(self, tools: Optional[List[Callable]] = None, system_instruction: Optional[str] = None):
+    def _get_model(self, tools: Optional[List[Callable]] = None, system_instruction: Optional[str] = None, generation_config: Optional[Dict[str, Any]] = None):
         """Lazily initializes or updates the model if configuration changes."""
         # In Gemini, tools and system_instruction are set at model initialization
         # If they change, we need to re-initialize the model
-        if self.model is None or tools != self._current_tools or system_instruction != self._current_system_instruction:
+        if (self.model is None or 
+            tools != self._current_tools or 
+            system_instruction != self._current_system_instruction or
+            generation_config != getattr(self, '_current_generation_config', None)):
+            
             self._current_tools = tools
             self._current_system_instruction = system_instruction
+            self._current_generation_config = generation_config
+            
             self.model = genai.GenerativeModel(
                 model_name=self.model_name,
                 tools=tools,
-                system_instruction=system_instruction
+                system_instruction=system_instruction,
+                generation_config=generation_config
             )
         return self.model
 
     def generate_content(self, 
                         prompt: Union[str, List[Any]], 
                         tools: Optional[List[Callable]] = None,
-                        system_instruction: Optional[str] = None) -> Any:
+                        system_instruction: Optional[str] = None,
+                        generation_config: Optional[Dict[str, Any]] = None) -> Any:
         
-        model = self._get_model(tools, system_instruction)
+        model = self._get_model(tools, system_instruction, generation_config)
         return model.generate_content(prompt)
 
     async def generate_content_async(self, 
                         prompt: Union[str, List[Any]], 
                         tools: Optional[List[Callable]] = None,
-                        system_instruction: Optional[str] = None) -> Any:
+                        system_instruction: Optional[str] = None,
+                        generation_config: Optional[Dict[str, Any]] = None) -> Any:
         
-        model = self._get_model(tools, system_instruction)
+        model = self._get_model(tools, system_instruction, generation_config)
         return await model.generate_content_async(prompt)
     
     def get_token_usage(self, response: Any) -> Dict[str, int]:

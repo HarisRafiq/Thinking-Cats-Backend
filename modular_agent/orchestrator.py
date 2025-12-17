@@ -11,7 +11,7 @@ from .tools.definitions import ToolDefinitions
 from .utils.sanitization import sanitize_response
 
 class Orchestrator:
-    def __init__(self, model_name: str = "gemini-2.5-flash", verbose: bool = True, event_callback: Optional[Callable[[Dict], None]] = None, theme: str = "cat", session_id: Optional[str] = None, user_id: Optional[str] = None, db_manager: Optional[DatabaseManager] = None):
+    def __init__(self, model_name: str = "gemini-3.0-flash", verbose: bool = True, event_callback: Optional[Callable[[Dict], None]] = None, theme: str = "cat", session_id: Optional[str] = None, user_id: Optional[str] = None, db_manager: Optional[DatabaseManager] = None):
         self.verbose = verbose
         self.model_name = model_name
         self.personality_manager = PersonalityManager(db_manager=db_manager)
@@ -223,12 +223,12 @@ class Orchestrator:
             questions_context = f"\n\nQuestions already covered in previous plans (do not repeat unless new angle):\n{questions_text}\n"
         
         # Construct prompt for plan generation
-        prompt = (
+        base_prompt = (
             f"Current User Input: {user_input}{context_section}{questions_context}\n\n"
             "Your job is to create a plan to address the user's request by summoning experts. "
             "Analyze the user's input and create a plan with relevant experts who can discuss or help with the topic.\n\n"
             "IMPORTANT GUIDELINES:\n"
-            "- If the user's request is clear enough to identify a topic or theme, create a plan immediately. Do NOT ask for clarification.\n"
+            "- If the user's request is clear enough to identify a topic or theme, create a plan immediately from all perspectives. Do NOT ask for clarification.\n"
             "- Only ask for clarification if the input is truly ambiguous and you cannot identify ANY topic or theme to discuss.\n"
             "- If the user mentions orchestrating experts, discussing experts, or wants expert opinions, that IS a clear request - create a plan with relevant experts.\n"
             "- If the user asks about a concept, idea, problem, or topic, create a plan with experts who can discuss it.\n\n"
@@ -241,50 +241,59 @@ class Orchestrator:
             '  {"expert": "Steve Jobs", "question": "How would you approach this problem?", "reason": "Innovation and product thinking"},\n'
             '  {"expert": "Marie Curie", "question": "What scientific principles apply here?", "reason": "Deep scientific knowledge"}\n'
             "]\n\n"
-            "Return ONLY the JSON array, no additional text."
+            "Return ONLY the JSON array."
         )
         
         # Clear agent context to avoid duplication since we provide full history in prompt
         self.agent.context.clear()
         
-        response, usage = await self.agent.chat(prompt)
-        self._log_usage_background(usage, model=self.model_name, prompt=prompt, response=response)
-        
-        # Check if agent requested clarification (interruption)
-        if response == "WAITING_FOR_USER_INPUT":
-            if self.verbose:
-                print("[Orchestrator] Agent requested clarification - returning empty plan")
-            # Return empty plan - clarification has already been emitted via events
-            # The user will respond, and we'll call generate_plan() again
-            self.current_plan = []
-            self.plan_executed = []
-            return []
-        
-        # Parse the JSON plan from response
+        max_retries = 2
+        current_retry = 0
+        current_prompt = base_prompt
         plan = []
-        try:
-            # Try to extract JSON from response (might have extra text)
-            json_match = re.search(r'\[.*\]', response, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(0)
-                parsed_items = json.loads(json_str)
-                
-                # Validate plan structure and add valid items
-                for item in parsed_items:
-                    if isinstance(item, dict) and "expert" in item and "question" in item:
-                        plan.append(item)
-                    else:
-                        if self.verbose:
-                            print(f"[Orchestrator] Skipping invalid plan item: {item}")
-                
+        
+        while current_retry <= max_retries:
+            if current_retry > 0:
                 if self.verbose:
-                    print(f"[Orchestrator] Generated plan with {len(plan)} experts")
+                    print(f"[Orchestrator] Retrying plan generation (attempt {current_retry}/{max_retries})")
+            
+            response, usage = await self.agent.chat(current_prompt)
+            self._log_usage_background(usage, model=self.model_name, prompt=current_prompt, response=response)
+            
+            # Check if agent requested clarification (interruption)
+            if response == "WAITING_FOR_USER_INPUT":
+                if self.verbose:
+                    print("[Orchestrator] Agent requested clarification - returning empty plan")
+                self.current_plan = []
+                self.plan_executed = []
+                return []
+            
+            # Parse the JSON plan from response
+            plan = self._parse_json_plan(response)
+            
+            if plan:
+                if self.verbose:
+                    print(f"[Orchestrator] Successfully generated plan with {len(plan)} experts")
+                break
             else:
-                if self.verbose:
-                    print(f"[Orchestrator] No JSON found in response: {response[:200]}")
-        except json.JSONDecodeError as e:
+                current_retry += 1
+                if current_retry <= max_retries:
+                    # Provide feedback for retry
+                    current_prompt = (
+                        f"{base_prompt}\n\n"
+                        f"PREVIOUS ATTEMPT FAILED TO PROVIDE VALID JSON. "
+                        f"Response was: {response[:500]}\n"
+                        f"Please ensure you return ONLY a valid JSON array of expert objects."
+                    )
+        
+        if not plan and current_retry > max_retries:
             if self.verbose:
-                print(f"[Orchestrator] Failed to parse plan JSON: {e}")
+                print("[Orchestrator] Failed to generate a valid plan after retries")
+            await self._emit_event({
+                "type": "orchestrator_error",
+                "phase": "planning",
+                "error": "Failed to generate a valid plan after multiple attempts."
+            })
         
         # Store plan and reset execution tracking
         self.current_plan = plan
@@ -297,6 +306,46 @@ class Orchestrator:
         })
         
         return plan
+
+    def _parse_json_plan(self, response: str) -> List[Dict[str, str]]:
+        """Parses and validates the JSON plan from the model response."""
+        plan = []
+        try:
+            # Try to extract JSON from response (might have markdown blocks)
+            json_str = response
+            if "```json" in response:
+                json_str = response.split("```json")[1].split("```")[0].strip()
+            elif "```" in response:
+                json_str = response.split("```")[1].split("```")[0].strip()
+            
+            # Clean up any potential leading/trailing non-JSON text
+            json_match = re.search(r'\[.*\]', json_str, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+            
+            parsed_items = json.loads(json_str)
+            
+            if not isinstance(parsed_items, list):
+                if self.verbose:
+                    print(f"[Orchestrator] Plan is not a list: {type(parsed_items)}")
+                return []
+
+            # Validate plan structure and add valid items
+            for item in parsed_items:
+                if isinstance(item, dict) and "expert" in item and "question" in item:
+                    # Ensure reason exists
+                    if "reason" not in item:
+                        item["reason"] = "No reason provided"
+                    plan.append(item)
+                else:
+                    if self.verbose:
+                        print(f"[Orchestrator] Skipping invalid plan item: {item}")
+            
+            return plan
+        except (json.JSONDecodeError, Exception) as e:
+            if self.verbose:
+                print(f"[Orchestrator] Failed to parse plan JSON: {e}")
+            return []
 
     async def execute_plan(self) -> str:
         """
@@ -437,10 +486,11 @@ class Orchestrator:
                         print("[Orchestrator] Clarification requested - keeping status as waiting_for_input")
                     return "Waiting for user clarification"
                 else:
-                    # No clarification - set to idle
+                    # No clarification and no plan - this might be a failure or just no experts needed
+                    # If it was a failure, generate_plan already emitted an error event
                     await self.db_manager.update_session_status(self.session_id, "idle")
             
-            return "No experts were selected for this query"
+            return "No experts were selected for this query. Please try being more specific."
         
         # ===== PHASE 2: EXECUTION =====
         # Execute the plan by consulting each expert
