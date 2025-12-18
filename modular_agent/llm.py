@@ -23,7 +23,7 @@ class LLMProvider(ABC):
 class GeminiProvider(LLMProvider):
     """Gemini implementation of LLMProvider."""
     
-    def __init__(self, model_name: str = "gemini-2.5-flash", api_key: Optional[str] = None):
+    def __init__(self, model_name: str, api_key: Optional[str] = None):
         if api_key:
             genai.configure(api_key=api_key)
         self.model_name = model_name

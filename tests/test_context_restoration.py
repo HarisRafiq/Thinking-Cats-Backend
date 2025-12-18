@@ -27,6 +27,7 @@ async def test_context_restoration():
     # 2. Create initial orchestrator and simulate a conversation
     print("\n--- Phase 1: Initial Conversation ---")
     orchestrator1 = Orchestrator(
+        model_name="gemini-3.0-flash",
         session_id=session_id,
         db_manager=db_manager,
         verbose=True
@@ -73,6 +74,7 @@ async def test_context_restoration():
     print("\n--- Phase 2: Simulating Restart ---")
     # Create a new orchestrator instance for the same session
     orchestrator2 = Orchestrator(
+        model_name="gemini-3.0-flash",
         session_id=session_id,
         db_manager=db_manager,
         verbose=True

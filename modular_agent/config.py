@@ -10,5 +10,3 @@ if not GOOGLE_API_KEY:
     raise ValueError("GOOGLE_API_KEY not found in environment variables.")
 
 genai.configure(api_key=GOOGLE_API_KEY)
-
-DEFAULT_MODEL = "gemini-2.5-flash"

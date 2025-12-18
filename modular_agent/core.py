@@ -1,6 +1,5 @@
 import google.generativeai as genai
 from typing import List, Optional, Union, Callable, Dict, Any
-from .config import DEFAULT_MODEL
 from .personalities import PersonalityManager, Personality
 from .tools import ToolManager
 from .context_manager import ContextManager
@@ -14,7 +13,7 @@ class ModularAgent:
     def __init__(
         self,
         provider: Optional[LLMProvider] = None,
-        model_name: str = DEFAULT_MODEL, # Kept for backward compatibility/default provider
+        model_name: Optional[str] = None, # Required if provider is not provided
         personality: str = "default",
         tools: Optional[List[Callable]] = None,
         verbose: bool = False
@@ -24,8 +23,10 @@ class ModularAgent:
         # Initialize Provider
         if provider:
             self.provider = provider
-        else:
+        elif model_name:
             self.provider = GeminiProvider(model_name=model_name)
+        else:
+            raise ValueError("Either provider or model_name must be provided")
         
         # Initialize Personality
         self.personality_manager = PersonalityManager()

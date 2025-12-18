@@ -17,18 +17,19 @@ from gcs_utils import GCSUtils
 class ImageGenerator:
     """Generates images using Gemini and uploads them to GCS."""
     
-    def __init__(self, gcs_utils: GCSUtils, bucket_name: str, verbose: bool = False):
+    def __init__(self, gcs_utils: GCSUtils, bucket_name: str, model_name: str, verbose: bool = False):
         """
         Initialize ImageGenerator.
         
         Args:
             gcs_utils: GCSUtils instance for uploading images
             bucket_name: GCS bucket name for constructing public URLs
+            model_name: Gemini model name for image generation
             verbose: Enable verbose logging for debugging
         """
         self.gcs_utils = gcs_utils
         self.bucket_name = bucket_name
-        self.model_name = "gemini-2.5-flash-image"
+        self.model_name = model_name
         self.verbose = verbose
         
         # Initialize Gemini model for image generation

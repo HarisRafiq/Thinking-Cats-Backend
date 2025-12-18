@@ -18,6 +18,7 @@ async def start_chat(
     db_manager = Depends(get_db_manager),
     session_manager = Depends(get_session_manager)
 ):
+    model = "gemini-3-flash-preview"  # Default model; could be extended to take from request
     # Check user limits
     can_send = await db_manager.check_user_limit(str(current_user["_id"]))
     if not can_send:
@@ -48,7 +49,7 @@ async def start_chat(
         # Create new session in MongoDB first to get the _id
         session_id = await db_manager.create_session({
             "problem": request.problem,
-            "model": request.model
+            "model": model
         }, user_id=str(current_user["_id"]))
         
     # Start new session via manager
@@ -70,7 +71,7 @@ async def start_chat(
          await session_manager.start_new_session(
              session_id, 
              request.problem, 
-             request.model, 
+             model, 
              str(current_user["_id"])
          )
     

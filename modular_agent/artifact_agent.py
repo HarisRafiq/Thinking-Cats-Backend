@@ -4,12 +4,11 @@ Smart agent for creating and updating markdown artifacts from session context.
 Provides suggestions for how to generate content, then executes user's choice.
 Also provides intelligent editing capabilities with diff-based token efficiency.
 """
-from typing import Dict, Any, Optional, AsyncGenerator, List, Tuple
+from typing import Dict, Any, Optional, AsyncGenerator, Tuple
 import json
 import re
 from rapidfuzz import fuzz, process
 import markdown
-from markdown.extensions import codehilite, tables, fenced_code
 from .llm import GeminiProvider
 from .database import DatabaseManager
 
@@ -22,20 +21,23 @@ class ArtifactAgent:
     
     SUGGESTIONS_SYSTEM_PROMPT = """Analyze the conversation and suggest 3-5 simple, actionable document types that could be created from it.
 
+Identify the various EXPERT PERSPECTIVES or ROLES present in the session. Suggest documents that synthesize or compare these viewpoints.
+
 OUTPUT FORMAT - Respond with a valid JSON object only:
-{"actions": ["Twitter thread", "Business plan", "Todo list", "Meeting notes", "Blog post"]}
+{"actions": ["Perspective Comparison Matrix", "Executive Synthesis", "Technical Roadmap", "Twitter thread"]}
 
 Be specific to the conversation content. Suggest practical formats like:
-- Twitter/X thread, LinkedIn post, Blog post
+- X thread, LinkedIn post, Blog post
 - Business plan, Pitch deck, Executive summary
 - Todo list, Action plan, Meeting notes
 - Email draft, Proposal, Documentation
+- Mermaid Flowchart, Sequence Diagram, Gantt Chart
 
 Keep action names SHORT (2-4 words). No emojis, no descriptions.
 
 CRITICAL: Output ONLY valid JSON array of action strings."""
 
-    MERGE_SYSTEM_PROMPT = """You are an intelligent document merger. Your job is to integrate new discussion insights into an existing artifact while maintaining coherence.
+    MERGE_SYSTEM_PROMPT = """You are an intelligent document merger. Your job is to integrate new discussion insights into an existing artifact while maintaining coherence and structural integrity.
 
 ANALYZE for conflicts:
 1. Does the new discussion CONTRADICT key points in the original?
@@ -51,20 +53,15 @@ IF CONFLICT DETECTED - respond with JSON:
         "Option 2: Use new approach",
         "Option 3: Combine both approaches"
     ],
-    "conflict_summary": "Brief description of what conflicts"
+    "conflict_summary": "Describe exactly WHO said WHAT that contradicts the existing document"
 }
 
-Example conflicts:
-- Original says "X is the best approach" but new session argues for Y
-- Original recommends A, new session discovers problems with A
-- Contradictory data or conclusions
-
 IF NO CONFLICT - output the merged document directly (not JSON):
-- Seamlessly integrate new insights into the existing structure
-- Maintain the original format and style
-- Add new sections or expand existing ones as appropriate
-- Ensure the document reads as a unified, coherent piece
-- Preserve the original's core message while enriching it
+- Seamlessly integrate new insights into the existing structure.
+- PRESERVE the original flow; do not rewrite sections that don't need changes.
+- Focus on EXPANDING existing points or adding NEW sections where appropriate.
+- For technical docs or diagrams (like Mermaid), ensure syntax remains valid after integration.
+- Maintain the original tone and formatting (Markdown, Mermaid, etc.).
 
 CRITICAL: Either output {"conflict": true, ...} OR output the merged document content directly. Never both."""
 
@@ -83,58 +80,79 @@ OUTPUT FORMAT - Respond with a valid JSON object only:
 }
 
 RULES FOR SURGICAL EDITS (preferred when possible):
-1. Each edit should be a PRECISE find-and-replace
-2. Include enough surrounding text in "search" to make it UNIQUE (usually 1-3 sentences)
-3. The "search" string MUST exist EXACTLY in the document (including whitespace, punctuation)
-4. Keep edits MINIMAL - only change what's necessary
-5. If making multiple changes, return multiple edits in the array
-6. Order edits from TOP to BOTTOM of the document
+1. Each edit should be a PRECISE find-and-replace.
+2. Include enough surrounding text in "search" to make it UNIQUE.
+3. The "search" string MUST exist EXACTLY in the document (including whitespace, punctuation).
+4. For Mermaid Diagrams, ensure the search/replace preserves valid Mermaid syntax.
+5. Keep edits MINIMAL - only change what's necessary.
+6. Order edits from TOP to BOTTOM of the document.
 
 WHEN TO USE "rewrite" INSTEAD:
-- If the instruction asks for major restructuring
-- If >25% of the document needs to change
-- If the edit affects the entire flow/narrative
+- If the instruction asks for major restructuring.
+- If >25% of the document needs to change.
+- If the edit affects the entire flow/narrative.
 For rewrites, return a SINGLE edit with search="" (empty) and replace=full new content.
-
-EXAMPLES:
-
-Instruction: "Make the title more exciting"
-Document: "# Project Overview\n\nThis document describes..."
-Response: {"plan_summary": "Making title more exciting", "edit_type": "surgical", "edits": [{"search": "# Project Overview", "replace": "# 🚀 Project Overview: The Future is Now"}]}
-
-Instruction: "Fix the typo in paragraph 2"
-Document has "teh" instead of "the"
-Response: {"plan_summary": "Fixing typo", "edit_type": "surgical", "edits": [{"search": "This is teh best", "replace": "This is the best"}]}
-
-Instruction: "Completely rewrite this in a casual tone"
-Response: {"plan_summary": "Full rewrite to casual tone", "edit_type": "rewrite", "edits": [{"search": "", "replace": "...full new content..."}]}
 
 CRITICAL: Output ONLY valid JSON. The search strings must EXACTLY match text in the document."""
 
-    WRITER_SYSTEM_PROMPT = """You are a world-class content creator. Transform conversations into the requested format.
+    WRITER_SYSTEM_PROMPT = """You are an expert content synthesizer who transforms multi-perspective expert roundtable discussions into polished outputs.
 
-INFER STYLE FROM FORMAT:
-- Twitter/X thread: Punchy hooks, numbered tweets, emoji-rich, viral potential
-- LinkedIn post: Professional storytelling, key learnings, engagement hooks
-- Blog post: SEO-friendly, structured sections, compelling intro
-- Business plan: Formal structure, problem/solution, market analysis
-- Pitch deck: Investor-ready narrative, clear value prop, metrics
-- Executive summary: Concise, boardroom-ready, key decisions
-- Todo list: Actionable items, priorities, deadlines if mentioned
-- Action plan: Step-by-step roadmap, milestones, owners
-- Meeting notes: Key decisions, action items, attendees
-- Email draft: Clear subject line, professional tone, call-to-action
-- Documentation: Technical accuracy, examples, clear structure
+YOUR SOURCE MATERIAL:
+Every conversation contains multiple expert perspectives discussing a topic from different angles. Your job is to distill this rich dialogue into the requested format.
 
-CORE PRINCIPLES:
-- Start with a compelling title (# heading)
-- Be SPECIFIC - use details from the conversation
-- Format for SCANNABILITY - use markdown effectively
-- Make every paragraph earn its place
+SYNTHESIS APPROACH:
+1. Identify the core question/topic being addressed
+2. Extract key insights, agreements, and disagreements across perspectives
+3. Highlight where viewpoints complement or contradict each other
+4. Weave different angles into a cohesive narrative
+5. Preserve the depth and nuance of the multi-viewpoint discussion
 
-CRITICAL: Output ONLY the content. No meta-commentary."""
+COMMON OUTPUT FORMATS:
 
-    def __init__(self, db_manager: DatabaseManager, model_name: str = "gemini-2.5-flash"):
+**Perspective Comparison Table:**
+| Aspect | Perspective 1 | Perspective 2 | Perspective 3 |
+Show how different viewpoints address key dimensions
+
+**Consensus Summary:**
+What viewpoints aligned on, where they diverged, and implications
+
+**Structured Reports:**
+Sections like "Key Insights," "Divergent Views," "Recommendations"
+Present contrasting perspectives naturally without attribution
+
+**Social Content:**
+- Twitter threads: Different angles as separate tweets, cohesive narrative
+- LinkedIn: Synthesize insights showing multiple viewpoints were considered
+
+**Decision Documents:**
+Business plans, strategies, action plans that integrate diverse recommendations
+
+**Diagrams:**
+Mermaid flowcharts showing relationships between different perspectives
+```mermaid syntax with proper structure
+
+**Comparative Analysis:**
+Pros/cons, frameworks, or strategic options from different analytical lenses
+
+FORMATTING RULES:
+- Use markdown headers, tables, lists, and bold strategically
+- Present contrasting views: "Some argue X, while others emphasize Y..."
+- Show synthesis: "Combining these perspectives suggests..."
+- Highlight tensions: "There's debate between approach A and approach B..."
+- Be specific: Use actual concepts and examples from the discussion
+- Make it scannable: Break up text, use visual hierarchy
+
+OUTPUT GUIDELINES:
+- Lead with a clear title and context about the topic
+- Organize content so different perspectives are easy to distinguish
+- Synthesize where possible, integrating multiple viewpoints smoothly
+- Show the complexity: Don't oversimplify where genuine disagreement exists
+- End with key takeaways or recommendations when appropriate
+- Default to thorough but scannable formatting
+
+Deliver the content in the format requested, ensuring it captures the multi-dimensional nature of the discussion without attributing ideas to specific sources."""
+
+    def __init__(self, db_manager: DatabaseManager, model_name: str):
         self.db_manager = db_manager
         self.provider = GeminiProvider(model_name=model_name)
 
@@ -240,22 +258,26 @@ CRITICAL: Output ONLY the content. No meta-commentary."""
         }
     
     def _format_session_content(self, session_context: Dict[str, Any]) -> str:
-        """Formats session into readable content for the LLM."""
+        """Formats session into readable content for the LLM, highlighting expert perspectives."""
         parts = []
         
         if session_context.get("problem"):
-            parts.append(f"**Topic/Problem:** {session_context['problem']}\n")
+            parts.append(f"**TOPIC:** {session_context['problem']}\n")
         
         for slide in session_context.get("slides", []):
             slide_type = slide.get("type", "")
             
             if slide_type == "user_message":
-                parts.append(f"**User:** {slide.get('content', '')}")
+                content = slide.get('content', '') or slide.get('answer', '')
+                if content:
+                    parts.append(f"**USER:** {content}")
             elif slide_type == "agent_response":
-                expert = slide.get("expert", "Expert")
-                parts.append(f"**{expert}:** {slide.get('content', '')}")
+                # Use sender/expert name to highlight perspective
+                expert = slide.get("sender") or slide.get("expert") or "Expert"
+                content = slide.get('content', '')
+                parts.append(f"**PERSPECTIVE ({expert}):** {content}")
             elif slide_type == "clarification":
-                parts.append(f"**Clarification:** {slide.get('question', '')}")
+                parts.append(f"**CLARIFICATION REQUEST:** {slide.get('question', '')}")
         
         return "\n\n".join(parts)
     
@@ -378,6 +400,19 @@ Transform this conversation into the requested format."""
                     yield {"type": "chunk", "text": chunk["text"]}
             
             sanitized_content = self._strip_outer_code_fence(full_content)
+            
+            # Ensure specialized formats have their blocks if missing after stripping
+            is_mermaid_requested = any(k in display_name.lower() for k in ["mermaid", "flowchart", "diagram"])
+            is_json_requested = any(k in display_name.lower() for k in ["json", "structured"])
+            
+            if is_mermaid_requested and not sanitized_content.strip().startswith("```mermaid"):
+                if any(k in sanitized_content.lower() for k in ["graph ", "flowchart ", "sequencediagram"]):
+                    sanitized_content = f"```mermaid\n{sanitized_content.strip()}\n```"
+            elif is_json_requested and not sanitized_content.strip().startswith("```json"):
+                stripped = sanitized_content.strip()
+                if stripped.startswith("{") or stripped.startswith("["):
+                    sanitized_content = f"```json\n{stripped}\n```"
+
             yield {
                 "type": "complete",
                 "content": sanitized_content
@@ -446,10 +481,10 @@ Analyze for conflicts, then either ask a clarifying question OR output the merge
                     # Don't stream yet - we need to check if it's a conflict
             
             # Check if response is a conflict JSON
-            response_stripped = full_response.strip()
-            if response_stripped.startswith("{"):
+            response_sanitized = self._strip_outer_code_fence(full_response).strip()
+            if response_sanitized.startswith("{"):
                 try:
-                    conflict_data = json.loads(response_stripped)
+                    conflict_data = json.loads(response_sanitized)
                     if conflict_data.get("conflict"):
                         yield {
                             "type": "conflict",

@@ -11,7 +11,7 @@ from .tools.definitions import ToolDefinitions
 from .utils.sanitization import sanitize_response
 
 class Orchestrator:
-    def __init__(self, model_name: str = "gemini-3.0-flash", verbose: bool = True, event_callback: Optional[Callable[[Dict], None]] = None, theme: str = "cat", session_id: Optional[str] = None, user_id: Optional[str] = None, db_manager: Optional[DatabaseManager] = None):
+    def __init__(self, model_name: str, verbose: bool = True, event_callback: Optional[Callable[[Dict], None]] = None, theme: str = "cat", session_id: Optional[str] = None, user_id: Optional[str] = None, db_manager: Optional[DatabaseManager] = None):
         self.verbose = verbose
         self.model_name = model_name
         self.personality_manager = PersonalityManager(db_manager=db_manager)
@@ -29,7 +29,7 @@ class Orchestrator:
         
         # Create a simple model instance for generating one-liners
         # We can use the provider for this now
-        self._one_liner_provider = GeminiProvider(model_name="gemini-2.5-flash")
+        self._one_liner_provider = GeminiProvider(model_name="gemini--2.5-flash")
         
         # Initialize tool definitions
         self.tool_definitions = ToolDefinitions(self)
@@ -51,7 +51,7 @@ class Orchestrator:
 
 
 
-    def _log_usage_background(self, usage: Dict[str, int], model: str = "gemini-2.5-flash", prompt: str = None, response: str = None):
+    def _log_usage_background(self, usage: Dict[str, int], model: str, prompt: str = None, response: str = None):
         """Updates user usage and logs LLM call in background."""
         if not self.db_manager or not self.user_id:
             return

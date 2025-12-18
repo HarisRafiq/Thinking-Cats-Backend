@@ -54,11 +54,11 @@ async def test_caching():
 
 def test_orchestrator_model():
     print("\nTesting Orchestrator Model Configuration...")
-    orch = Orchestrator(verbose=False)
+    orch = Orchestrator(model_name="gemini-3.0-flash", verbose=False)
     
     print(f"One Liner Provider Model: {orch._one_liner_provider.model_name}")
-    assert orch._one_liner_provider.model_name == "gemini-2.5-flash"
-    print("PASS: Orchestrator uses gemini-2.5-flash for one-liners")
+    assert orch._one_liner_provider.model_name == "gemini-3.0-flash"
+    print("PASS: Orchestrator uses passed model for one-liners")
 
 if __name__ == "__main__":
     asyncio.run(test_caching())

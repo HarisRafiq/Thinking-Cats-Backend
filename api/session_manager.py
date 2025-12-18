@@ -1,7 +1,6 @@
 import asyncio
 from typing import Dict, Any, Optional
 from modular_agent.orchestrator import Orchestrator
-from modular_agent.config import DEFAULT_MODEL
 from api.events import DoneEvent, ErrorEvent, ProcessingStartEvent, ProcessingCompleteEvent
 
 class SessionManager:
@@ -37,7 +36,7 @@ class SessionManager:
             self.orchestrator_worker(
                 session_id, 
                 problem=None,  # No initial problem when resuming
-                model=session_data.get("model", DEFAULT_MODEL), 
+                model=session_data.get("model"), 
                 input_queue=input_queue, 
                 output_queue=output_queue,
                 user_id=session_data.get("user_id")

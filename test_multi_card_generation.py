@@ -120,6 +120,7 @@ async def test_full_pipeline_with_gemini():
         image_gen = ImageGenerator(
             gcs_utils=gcs_utils,
             bucket_name=bucket_name,
+            model_name="gemini-2.5-flash-image",
             verbose=True
         )
         

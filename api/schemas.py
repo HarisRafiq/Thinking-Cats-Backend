@@ -1,10 +1,8 @@
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel
-from modular_agent.config import DEFAULT_MODEL
 
 class ChatRequest(BaseModel):
     problem: Optional[str] = None
-    model: str = DEFAULT_MODEL
     session_id: Optional[str] = None
 
 class MessageRequest(BaseModel):

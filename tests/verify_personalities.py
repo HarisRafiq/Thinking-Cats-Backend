@@ -13,7 +13,7 @@ def test_personality_customization():
     def event_callback(event):
         events.append(event)
         
-    orchestrator = Orchestrator(theme="superhero", verbose=True, event_callback=event_callback)
+    orchestrator = Orchestrator(model_name="gemini-3.0-flash", theme="superhero", verbose=True, event_callback=event_callback)
     
     expert_name = "Elon Musk"
     

@@ -49,6 +49,7 @@ class UpdateRequest(BaseModel):
 class EditRequest(BaseModel):
     """Request for AI-powered artifact editing."""
     instruction: str  # Natural language edit instruction
+    model: str
     auto_commit: bool = False  # If true, commit immediately without preview
 
 
@@ -148,7 +149,7 @@ async def get_suggestions(
     if session.get("user_id") != user_id:
         raise HTTPException(status_code=403, detail="Not authorized to access this session")
     
-    agent = ArtifactAgent(db_manager=db_manager)
+    agent = ArtifactAgent(db_manager=db_manager, model_name=session.get("model"))
     result = await agent.get_suggestions(session_id=request.session_id)
     
     return {
@@ -195,7 +196,7 @@ async def generate_artifact(
         # Set status to generating
         await db_manager.set_artifact_status(artifact_id, "generating")
         
-        agent = ArtifactAgent(db_manager=db_manager)
+        agent = ArtifactAgent(db_manager=db_manager, model_name=session.get("model"))
         final_content = ""
         checkpoint_count = 0
         checkpoint_interval = 500  # Save checkpoint every 500 characters
@@ -313,7 +314,7 @@ async def merge_artifact(
         raise HTTPException(status_code=403, detail="Not authorized to access this artifact")
     
     async def event_generator():
-        agent = ArtifactAgent(db_manager=db_manager)
+        agent = ArtifactAgent(db_manager=db_manager, model_name=session.get("model"))
         final_content = ""
         checkpoint_count = 0
         checkpoint_interval = 500
@@ -439,7 +440,7 @@ async def resolve_conflict(
         raise HTTPException(status_code=403, detail="Not authorized to access this artifact")
     
     async def event_generator():
-        agent = ArtifactAgent(db_manager=db_manager)
+        agent = ArtifactAgent(db_manager=db_manager, model_name=session.get("model"))
         final_content = ""
         
         try:
@@ -515,7 +516,7 @@ async def edit_artifact(
         raise HTTPException(status_code=403, detail="Not authorized")
     
     async def event_generator():
-        agent = ArtifactAgent(db_manager=db_manager)
+        agent = ArtifactAgent(db_manager=db_manager, model_name=request.model)
         final_content = None
         plan_summary = None
         
