@@ -43,21 +43,22 @@ class MockDB:
 async def test_suggestions():
     print("\n--- Testing Smarter Suggestions ---")
     db = MockDB()
-    agent = ArtifactAgent(db, model_name="gemini-3.0-flash") # type: ignore
+    agent = ArtifactAgent(db, model_name="gemini-2.0-flash-exp") 
     
     suggestions = await agent.get_suggestions("test_session")
     print(f"Suggestions: {json.dumps(suggestions, indent=2)}")
     
-    # Verify that we see some "Perspective" or comparison-related suggestions
+    # Verify that we see some engaging suggestion formats
     actions = suggestions.get("actions", [])
-    has_perspective = any("Perspective" in a or "Comparison" in a or "Synthesis" in a for a in actions)
-    print(f"Has Perspective-based suggestions: {has_perspective}")
-    return has_perspective
+    # Check for keywords from the new "ENGAGING" prompts
+    has_engaging = any("Thread" in a or "Plan" in a or "Matrix" in a or "Map" in a or "Brief" in a for a in actions)
+    print(f"Has engaging suggestions: {has_engaging}")
+    return has_engaging
 
 async def test_mermaid_generation():
     print("\n--- Testing Mermaid Generation ---")
     db = MockDB()
-    agent = ArtifactAgent(db, model_name="gemini-3.0-flash") # type: ignore
+    agent = ArtifactAgent(db, model_name="gemini-2.0-flash-exp")
     
     print("Generating Mermaid flowchart...")
     content = ""
@@ -75,7 +76,7 @@ async def test_mermaid_generation():
 async def test_merge_logic():
     print("\n--- Testing Intelligent Merge (Conflict Expected) ---")
     db = MockDB()
-    agent = ArtifactAgent(db) # type: ignore
+    agent = ArtifactAgent(db, model_name="gemini-2.0-flash-exp")
     
     print("Merging new insights...")
     content = ""

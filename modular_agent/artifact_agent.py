@@ -19,57 +19,69 @@ class ArtifactAgent:
     Analyzes session + existing artifact context to offer options.
     """
     
-    SUGGESTIONS_SYSTEM_PROMPT = """Analyze the conversation and suggest 3-5 simple, actionable document types that could be created from it.
+    SUGGESTIONS_SYSTEM_PROMPT = """Analyze the user's goal and suggest 3-5 specific deliverables that would help them accomplish it.
 
-Identify the various EXPERT PERSPECTIVES or ROLES present in the session. Suggest documents that synthesize or compare these viewpoints.
+    ANALYZE THE CONTEXT:
+    - What concrete outcome does the user need?
+    - What format would be most actionable for them?
+    - What's the appropriate scope given the conversation depth?
 
-OUTPUT FORMAT - Respond with a valid JSON object only:
-{"actions": ["Perspective Comparison Matrix", "Executive Synthesis", "Technical Roadmap", "Twitter thread"]}
+    SUGGESTION CRITERIA:
+    - Prioritize deliverables they can USE immediately
+    - Vary the type/format across suggestions
+    - Order by: (1) Most directly useful, (2) Complementary value, (3) Future-helpful
+    - Avoid near-duplicates (e.g., "blog post" and "article" are too similar)
 
-Be specific to the conversation content. Suggest practical formats like:
-- X thread, LinkedIn post, Blog post
-- Business plan, Pitch deck, Executive summary
-- Todo list, Action plan, Meeting notes
-- Email draft, Proposal, Documentation
-- Mermaid Flowchart, Sequence Diagram, Gantt Chart
+    DELIVERABLE TYPES:
+    Documents: reports, guides, proposals, templates, checklists, scripts
+    Communications: emails, posts, presentations, announcements
+    Planning: roadmaps, strategies, action plans, frameworks
+    Creative: stories, marketing copy, product descriptions
 
-Keep action names SHORT (2-4 words). No emojis, no descriptions.
+    OUTPUT FORMAT:
+    {"actions": ["Action-oriented title 1", "Action-oriented title 2", "Action-oriented title 3"]}
 
-CRITICAL: Output ONLY valid JSON array of action strings."""
+    Use specific, actionable titles like "Customer onboarding email sequence" not "Email template"
 
-    MERGE_SYSTEM_PROMPT = """You are an intelligent document merger. Your job is to integrate new discussion insights into an existing artifact while maintaining coherence and structural integrity.
+    CRITICAL: Output ONLY valid JSON."""
 
-ANALYZE for conflicts:
-1. Does the new discussion CONTRADICT key points in the original?
-2. Does it CHANGE the core argument/conclusion?
-3. Are there INCOMPATIBLE perspectives that need user input?
+    MERGE_SYSTEM_PROMPT = """You update existing documents with new information while keeping them COPY-PASTE READY.
 
-IF CONFLICT DETECTED - respond with JSON:
+CONFLICT CHECK:
+1. Does new info CONTRADICT the original's key points?
+2. Does it CHANGE the core recommendation/conclusion?
+3. Are there INCOMPATIBLE approaches requiring user decision?
+
+IF CONFLICT - respond with JSON:
 {
     "conflict": true,
-    "question": "Brief question asking user how to resolve the specific conflict",
+    "question": "Specific question to resolve the conflict",
     "suggested_resolutions": [
-        "Option 1: Keep original approach",
-        "Option 2: Use new approach",
-        "Option 3: Combine both approaches"
+        "Keep original: [what that means]",
+        "Use new info: [what that means]",
+        "Combine both: [how that would work]"
     ],
-    "conflict_summary": "Describe exactly WHO said WHAT that contradicts the existing document"
+    "conflict_summary": "The document says X, but new info suggests Y"
 }
 
-IF NO CONFLICT - output the merged document directly (not JSON):
-- Seamlessly integrate new insights into the existing structure.
-- PRESERVE the original flow; do not rewrite sections that don't need changes.
-- Focus on EXPANDING existing points or adding NEW sections where appropriate.
-- For technical docs or diagrams (like Mermaid), ensure syntax remains valid after integration.
-- Maintain the original tone and formatting (Markdown, Mermaid, etc.).
+IF NO CONFLICT - output the updated document directly:
 
-CRITICAL: Either output {"conflict": true, ...} OR output the merged document content directly. Never both."""
+MERGE RULES:
+1. **INTEGRATE naturally** - Weave new info into existing structure
+2. **STAY TOPIC-FOCUSED** - Keep it about the subject, not the conversation
+3. **PRESERVE format** - Same deliverable type, same structure
+4. **ENHANCE value** - Make the document more complete/useful
+5. **NO META** - Don't mention "updates", "new information", etc.
 
-    EDITOR_SYSTEM_PROMPT = """You are a surgical document editor. Given a document and an edit instruction, you produce PRECISE, MINIMAL changes.
+The output should read as one cohesive, polished document.
 
-OUTPUT FORMAT - Respond with a valid JSON object only:
+CRITICAL: Output ONLY the merged document OR conflict JSON. No explanations."""
+
+    EDITOR_SYSTEM_PROMPT = """You are a precision document editor. Make EXACT changes while keeping the document COPY-PASTE READY.
+
+OUTPUT FORMAT (valid JSON only):
 {
-    "plan_summary": "1-sentence description of what you're changing",
+    "plan_summary": "1-sentence description of the change",
     "edit_type": "surgical" | "rewrite",
     "edits": [
         {
@@ -79,78 +91,70 @@ OUTPUT FORMAT - Respond with a valid JSON object only:
     ]
 }
 
-RULES FOR SURGICAL EDITS (preferred when possible):
-1. Each edit should be a PRECISE find-and-replace.
-2. Include enough surrounding text in "search" to make it UNIQUE.
-3. The "search" string MUST exist EXACTLY in the document (including whitespace, punctuation).
-4. For Mermaid Diagrams, ensure the search/replace preserves valid Mermaid syntax.
-5. Keep edits MINIMAL - only change what's necessary.
-6. Order edits from TOP to BOTTOM of the document.
+SURGICAL EDIT RULES:
+1. "search" MUST match the document EXACTLY (whitespace, punctuation, everything)
+2. Include 10-20 words of context to ensure uniqueness
+3. Order edits TOP to BOTTOM
+4. Preserve the document's format and style
+5. For Mermaid diagrams, ensure syntax remains valid
 
-WHEN TO USE "rewrite" INSTEAD:
-- If the instruction asks for major restructuring.
-- If >25% of the document needs to change.
-- If the edit affects the entire flow/narrative.
-For rewrites, return a SINGLE edit with search="" (empty) and replace=full new content.
+USE "rewrite" WHEN:
+- Major restructuring is needed
+- >25% of content changes
+- User asks to "completely redo" or "rewrite"
+For rewrites: search="" (empty), replace=full new document
 
-CRITICAL: Output ONLY valid JSON. The search strings must EXACTLY match text in the document."""
+QUALITY CHECK - After edit, the document must still be:
+✓ Complete (no missing pieces)
+✓ Properly formatted (valid markdown)
+✓ Ready to copy-paste and use immediately
+✓ Consistent in tone and style
 
-    WRITER_SYSTEM_PROMPT = """You are an expert content synthesizer who transforms multi-perspective expert roundtable discussions into polished outputs.
+CRITICAL: Output ONLY valid JSON."""
 
-YOUR SOURCE MATERIAL:
-Every conversation contains multiple expert perspectives discussing a topic from different angles. Your job is to distill this rich dialogue into the requested format.
+    WRITER_SYSTEM_PROMPT = """You create polished, publication-ready deliverables based on the user's needs and the information gathered.
 
-SYNTHESIS APPROACH:
-1. Identify the core question/topic being addressed
-2. Extract key insights, agreements, and disagreements across perspectives
-3. Highlight where viewpoints complement or contradict each other
-4. Weave different angles into a cohesive narrative
-5. Preserve the depth and nuance of the multi-viewpoint discussion
+YOUR PROCESS:
+1. Identify the user's goal from their questions and requests
+2. Determine the most useful deliverable type and format
+3. Create authoritative content about THE TOPIC ITSELF (not about a conversation)
+4. Write as the expert, not as a summarizer or reporter
 
-COMMON OUTPUT FORMATS:
+CRITICAL VOICE RULES:
+- Write ABOUT the topic directly, as if you're the authority
+- NEVER mention: "the conversation", "we discussed", "experts said", "based on our chat"
+- NEVER attribute ideas to sources from the conversation
+- NEVER use phrases like "here's your..." or "I've created..."
+- Just deliver the content as if it exists independently
 
-**Perspective Comparison Table:**
-| Aspect | Perspective 1 | Perspective 2 | Perspective 3 |
-Show how different viewpoints address key dimensions
+CONTENT QUALITY STANDARDS:
 
-**Consensus Summary:**
-What viewpoints aligned on, where they diverged, and implications
+**Complete & Actionable**
+- No placeholders like "[insert X]", "[your company]", or "TBD"
+- No "..." or incomplete sections
+- User can immediately copy-paste and use
 
-**Structured Reports:**
-Sections like "Key Insights," "Divergent Views," "Recommendations"
-Present contrasting perspectives naturally without attribution
+**Professionally Structured**
+- Use clear hierarchy (headings, sections, formatting)
+- Apply proper markdown/formatting for the deliverable type
+- Keep paragraphs focused and scannable
 
-**Social Content:**
-- Twitter threads: Different angles as separate tweets, cohesive narrative
-- LinkedIn: Synthesize insights showing multiple viewpoints were considered
+**Engaging & Effective**
+- Use strong, specific language (avoid "might", "could", "possibly")
+- Lead with value (strong intros, clear takeaways)
+- Match the tone to the deliverable (professional for reports, conversational for social posts)
 
-**Decision Documents:**
-Business plans, strategies, action plans that integrate diverse recommendations
+**Contextually Appropriate**
+- Match the depth to what information was gathered
+- Scope fits the user's stated goal
+- Format suits the intended use case
 
-**Diagrams:**
-Mermaid flowcharts showing relationships between different perspectives
-```mermaid syntax with proper structure
+SELF-CHECK:
+- If someone found this document standalone, would they understand it fully?
+- Is there any trace of it being from a conversation? (Remove it)
+- Can they use it immediately without editing? (Make it so)
 
-**Comparative Analysis:**
-Pros/cons, frameworks, or strategic options from different analytical lenses
-
-FORMATTING RULES:
-- Use markdown headers, tables, lists, and bold strategically
-- Present contrasting views: "Some argue X, while others emphasize Y..."
-- Show synthesis: "Combining these perspectives suggests..."
-- Highlight tensions: "There's debate between approach A and approach B..."
-- Be specific: Use actual concepts and examples from the discussion
-- Make it scannable: Break up text, use visual hierarchy
-
-OUTPUT GUIDELINES:
-- Lead with a clear title and context about the topic
-- Organize content so different perspectives are easy to distinguish
-- Synthesize where possible, integrating multiple viewpoints smoothly
-- Show the complexity: Don't oversimplify where genuine disagreement exists
-- End with key takeaways or recommendations when appropriate
-- Default to thorough but scannable formatting
-
-Deliver the content in the format requested, ensuring it captures the multi-dimensional nature of the discussion without attributing ideas to specific sources."""
+CRITICAL: Output ONLY the deliverable content. No preambles, explanations, or meta-commentary."""
 
     def __init__(self, db_manager: DatabaseManager, model_name: str):
         self.db_manager = db_manager
@@ -258,11 +262,14 @@ Deliver the content in the format requested, ensuring it captures the multi-dime
         }
     
     def _format_session_content(self, session_context: Dict[str, Any]) -> str:
-        """Formats session into readable content for the LLM, highlighting expert perspectives."""
+        """Formats session into topic-focused content, extracting user intent and key information."""
         parts = []
         
         if session_context.get("problem"):
             parts.append(f"**TOPIC:** {session_context['problem']}\n")
+        
+        user_questions = []
+        information_gathered = []
         
         for slide in session_context.get("slides", []):
             slide_type = slide.get("type", "")
@@ -270,14 +277,25 @@ Deliver the content in the format requested, ensuring it captures the multi-dime
             if slide_type == "user_message":
                 content = slide.get('content', '') or slide.get('answer', '')
                 if content:
-                    parts.append(f"**USER:** {content}")
+                    user_questions.append(content)
             elif slide_type == "agent_response":
-                # Use sender/expert name to highlight perspective
-                expert = slide.get("sender") or slide.get("expert") or "Expert"
                 content = slide.get('content', '')
-                parts.append(f"**PERSPECTIVE ({expert}):** {content}")
+                if content:
+                    information_gathered.append(content)
             elif slide_type == "clarification":
-                parts.append(f"**CLARIFICATION REQUEST:** {slide.get('question', '')}")
+                question = slide.get('question', '')
+                if question:
+                    user_questions.append(f"(Clarification needed: {question})")
+        
+        if user_questions:
+            parts.append("**USER'S QUESTIONS & INTENT:**")
+            for q in user_questions:
+                parts.append(f"- {q}")
+        
+        if information_gathered:
+            parts.append("\n**INFORMATION & INSIGHTS GATHERED:**")
+            for info in information_gathered:
+                parts.append(info)
         
         return "\n\n".join(parts)
     
@@ -299,12 +317,12 @@ Deliver the content in the format requested, ensuring it captures the multi-dime
         
         session_content = self._format_session_content(session_context)
         
-        prompt = f"""Analyze this conversation and suggest 3-5 document types that would be useful.
+        prompt = f"""Look at what this user is trying to accomplish and suggest 3-5 deliverables that would help them.
 
-## Session Content
+## User's Questions & Context
 {session_content[:2000]}
 
-What documents could be created from this conversation?"""
+What does this user NEED? What deliverables would be most useful for their goal?"""
         
         try:
             response = await self.provider.generate(
@@ -378,14 +396,21 @@ What documents could be created from this conversation?"""
             yield {"type": "error", "message": "No action or custom prompt provided"}
             return
         
-        prompt = f"""Create content based on the user's request:
+        prompt = f"""Create a COPY-PASTE READY {what_to_create}.
 
-**What to Create:** {what_to_create}
-
-## Source Material (Conversation)
+## What the User Needs
 {session_content}
 
-Transform this conversation into the requested format."""
+YOUR TASK:
+1. Understand what the user is trying to accomplish
+2. Create a {what_to_create} about THE TOPIC (not about the conversation)
+3. Write as an expert on this topic - authoritative, direct, useful
+
+DO NOT reference "the discussion", "experts", or "perspectives". 
+DO NOT summarize the conversation.
+DO create polished content about the actual subject matter.
+
+Output ONLY the {what_to_create} - no explanations."""
         
         yield {"type": "start", "message": f"Creating {display_name}..."}
         
@@ -458,15 +483,15 @@ Transform this conversation into the requested format."""
         
         session_content = self._format_session_content(session_context)
         
-        prompt = f"""Merge the new discussion insights into this existing artifact.
+        prompt = f"""Update this document with new information from the user's session.
 
-## Existing Artifact
+## Current Document
 {existing_content}
 
-## New Discussion to Integrate
+## New Information
 {session_content}
 
-Analyze for conflicts, then either ask a clarifying question OR output the merged document."""
+Check for conflicts. If none, output the updated document (about THE TOPIC, not referencing conversations)."""
         
         yield {"type": "start", "message": "Analyzing and merging..."}
         
@@ -542,18 +567,18 @@ Analyze for conflicts, then either ask a clarifying question OR output the merge
         existing_content = artifact.get("content", "")
         session_content = self._format_session_content(session_context)
         
-        prompt = f"""Merge the new discussion into this artifact using the user's guidance.
+        prompt = f"""Update this document with new information, following the user's guidance.
 
-## Existing Artifact
+## Current Document
 {existing_content}
 
-## New Discussion to Integrate
+## New Information to Add
 {session_content}
 
-## User's Resolution Guidance
+## User's Guidance
 {resolution}
 
-Now merge the content following the user's guidance. Output ONLY the merged document."""
+Create the updated document. Write about THE TOPIC - don't reference conversations or sources. Output ONLY the final document."""
         
         yield {"type": "start", "message": "Completing merge..."}
         

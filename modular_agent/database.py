@@ -225,6 +225,16 @@ class DatabaseManager:
         # Initialize is_shared if not present
         if 'is_shared' not in data:
             data['is_shared'] = False
+        
+        # Initialize usage_stats if not present
+        if 'usage_stats' not in data:
+            data['usage_stats'] = {
+                'input_tokens': 0,
+                'output_tokens': 0,
+                'thinking_tokens': 0,
+                'total_tokens': 0,
+                'total_cost': 0.0
+            }
             
         result = await self.db.sessions.insert_one(data)
         return str(result.inserted_id)
@@ -274,6 +284,25 @@ class DatabaseManager:
         )
         
         return str(slide_id)
+
+    async def update_session_usage(self, session_id: str, input_tokens: int, output_tokens: int, thinking_tokens: int = 0, cost: float = 0.0):
+        """Updates the session's token usage statistics."""
+        if self.db is None:
+            await self.connect()
+        
+        await self.db.sessions.update_one(
+            {"_id": ObjectId(session_id)},
+            {
+                "$inc": {
+                    "usage_stats.input_tokens": input_tokens,
+                    "usage_stats.output_tokens": output_tokens,
+                    "usage_stats.thinking_tokens": thinking_tokens,
+                    "usage_stats.total_tokens": input_tokens + output_tokens + thinking_tokens,
+                    "usage_stats.total_cost": cost
+                },
+                "$set": {"updated_at": datetime.utcnow()}
+            }
+        )
 
     async def update_session_status(self, session_id: str, status: str, pending_interaction: Optional[Dict[str, Any]] = None):
         """Updates the session status and pending interaction details."""

@@ -29,13 +29,14 @@ class Orchestrator:
         
         # Create a simple model instance for generating one-liners
         # We can use the provider for this now
-        self._one_liner_provider = GeminiProvider(model_name="gemini--2.5-flash")
+        self._one_liner_provider = GeminiProvider(model_name="gemini-2.5-flash")
         
         # Initialize tool definitions
         self.tool_definitions = ToolDefinitions(self)
         
         # Plan storage for current execution
-        self.current_plan = []  # List of {"expert": str, "question": str, "reason": str}
+        # Simplified schema: {"step": int, "phase": str, "expert": str, "question": str, "format": str}
+        self.current_plan = []
         self.plan_executed = []  # List of expert names already executed
 
         # Initialize the main orchestrator agent (planner)
@@ -43,13 +44,24 @@ class Orchestrator:
         self.agent = ModularAgent(
             provider=self.provider,
             personality="moderator",
-            tools=[self.tool_definitions.ask_clarification],
+            tools=[],
             verbose=verbose
         )
 
 
 
 
+
+    def _run_db_task_background(self, coro, task_name: str = "DB operation"):
+        """Run a database operation in background with error handling."""
+        async def _wrapper():
+            try:
+                await coro
+            except Exception as e:
+                if self.verbose:
+                    print(f"[Orchestrator] Background {task_name} failed: {e}")
+        
+        asyncio.create_task(_wrapper())
 
     def _log_usage_background(self, usage: Dict[str, int], model: str, prompt: str = None, response: str = None):
         """Updates user usage and logs LLM call in background."""
@@ -78,6 +90,16 @@ class Orchestrator:
                     thinking_tokens,
                     cost
                 )
+                
+                # Update session token usage
+                if self.session_id:
+                    await self.db_manager.update_session_usage(
+                        self.session_id,
+                        usage['input_tokens'],
+                        output_tokens,
+                        thinking_tokens,
+                        cost
+                    )
                 
                 # Log detailed LLM call (synchronous, non-blocking)
                 self.db_manager.log_llm_call({
@@ -115,30 +137,35 @@ class Orchestrator:
             
             if question:
                 # Create a new Q&A user_message slide directly
-                try:
-                    slide = {
-                        "type": "user_message",
-                        "question": question,
-                        "answer": content
-                    }
-                    
-                    # Await slide creation to get definitive ID
-                    slide_id = await self.db_manager.add_slide(self.session_id, slide)
-                    slide["id"] = slide_id
-                    
-                    # Emit slide_added event with definitive MongoDB ID
-                    await self._emit_event({
-                        "type": "slide_added",
-                        "slide": slide
-                    })
-                    
-                    if self.verbose:
-                        print(f"[Orchestrator] Created Q&A user_message slide for clarification response")
-                except Exception as e:
-                    if self.verbose:
-                        print(f"[Orchestrator] Error creating Q&A slide for clarification response: {e}")
-                    import traceback
-                    traceback.print_exc()
+                import uuid
+                temp_id = str(uuid.uuid4())
+                
+                slide = {
+                    "type": "user_message",
+                    "question": question,
+                    "answer": content,
+                    "id": temp_id
+                }
+                
+                # Emit slide_added event immediately with temp ID
+                await self._emit_event({
+                    "type": "slide_added",
+                    "slide": slide
+                })
+                
+                # Create slide in DB in background (non-blocking)
+                async def _create_slide():
+                    try:
+                        slide_id = await self.db_manager.add_slide(self.session_id, slide)
+                        if slide_id != temp_id:
+                            slide["id"] = slide_id
+                        if self.verbose:
+                            print(f"[Orchestrator] Created Q&A user_message slide for clarification response")
+                    except Exception as e:
+                        if self.verbose:
+                            print(f"[Orchestrator] Error creating Q&A slide for clarification response: {e}")
+                
+                self._run_db_task_background(_create_slide(), "Q&A slide creation")
                 
                 # Emit event to notify frontend
                 await self._emit_event({
@@ -148,24 +175,32 @@ class Orchestrator:
             
             # Continue to let the agent process the answer
         else:
+            import uuid
+            temp_id = str(uuid.uuid4())
+            
             slide = {
                 "type": "user_message",
-                "content": content
+                "content": content,
+                "id": temp_id
             }
             
-            # Await slide creation to get definitive ID before emitting
-            try:
-                slide_id = await self.db_manager.add_slide(self.session_id, slide)
-                slide["id"] = slide_id
-                
-                # Emit slide_added event with definitive ID
-                await self._emit_event({
-                    "type": "slide_added",
-                    "slide": slide
-                })
-            except Exception as e:
-                if self.verbose:
-                    print(f"[Orchestrator] Error creating slide: {e}")
+            # Emit slide_added event immediately with temp ID
+            await self._emit_event({
+                "type": "slide_added",
+                "slide": slide
+            })
+            
+            # Create slide in DB in background (non-blocking)
+            async def _create_slide():
+                try:
+                    slide_id = await self.db_manager.add_slide(self.session_id, slide)
+                    if slide_id != temp_id:
+                        slide["id"] = slide_id
+                except Exception as e:
+                    if self.verbose:
+                        print(f"[Orchestrator] Error creating slide: {e}")
+            
+            self._run_db_task_background(_create_slide(), "user message slide creation")
 
     async def _emit_event(self, event_data: Dict):
         """Helper method to emit events via callback only (ephemeral SSE, no DB storage)."""
@@ -185,7 +220,7 @@ class Orchestrator:
     async def generate_plan(self, user_input: str) -> List[Dict[str, str]]:
         """
         Generates an execution plan with a list of experts and their questions.
-        Does NOT call experts yet - only decides who to call and why.
+        Uses a two-phase approach: brainstorming (structuring) vs execution (implementation).
         
         Uses current query and previous questions from all previous plans to avoid repetition.
         
@@ -201,13 +236,19 @@ class Orchestrator:
             "label": "Thinking Cats are planning..."
         })
         
-        # Fetch conversation history for context
+        # Fetch conversation history for context (exclude last message if it's the current input)
         conversation_history = await self._get_conversation_context(limit=20)
         
-        # Build context string
-        context_section = ""
+        # Build context string - ensure we don't repeat the current input which is already the first line
         if conversation_history:
+            # Simple check: if the last line of history is the current input, strip it
+            lines = conversation_history.strip().split("\n")
+            if lines and (lines[-1].endswith(user_input[:50]) or user_input[:50] in lines[-1]):
+                conversation_history = "\n".join(lines[:-1])
+            
             context_section = f"\n\nConversation History (Context for follow-up):\n{conversation_history}\n"
+        else:
+            context_section = ""
         
         # Fetch previous questions from slides (not questions_answered array)
         previous_questions = []
@@ -225,22 +266,38 @@ class Orchestrator:
         # Construct prompt for plan generation
         base_prompt = (
             f"Current User Input: {user_input}{context_section}{questions_context}\n\n"
-            "Your job is to create a plan to address the user's request by summoning experts. "
-            "Analyze the user's input and create a plan with relevant experts who can discuss or help with the topic.\n\n"
-            "IMPORTANT GUIDELINES:\n"
-            "- If the user's request is clear enough to identify a topic or theme, create a plan immediately from all perspectives. Do NOT ask for clarification.\n"
-            "- Only ask for clarification if the input is truly ambiguous and you cannot identify ANY topic or theme to discuss.\n"
-            "- If the user mentions orchestrating experts, discussing experts, or wants expert opinions, that IS a clear request - create a plan with relevant experts.\n"
-            "- If the user asks about a concept, idea, problem, or topic, create a plan with experts who can discuss it.\n\n"
-            "Return a JSON array with the experts you would summon. Each expert should have:\n"
-            '- "expert": The name of the famous personality or expert to consult\n'
-            '- "question": The specific question to ask this expert\n'
-            '- "reason": Why this expert is chosen for this task\n\n'
-            "Example format:\n"
+            "Your job is to be a THINKING PARTNER. Create a plan using two phases:\n\n"
+            
+            "PHASE: BRAINSTORMING\n"
+            "Use when the request is vague, broad, or undefined (e.g., 'I want to be rich', 'I need an app').\n"
+            "Do NOT solve it immediately. Do NOT ask the user for clarification.\n"
+            "Instead, assign experts to UNPACK and STRUCTURE the problem.\n"
+            "Ask experts for frameworks, mental models, or identifying questions.\n"
+            "  * BAD: 'User, what kind of app do you want?'\n"
+            "  * GOOD: 'What are the 5 critical questions to define a mobile app concept?'\n\n"
+            
+            "PHASE: EXECUTION\n"
+            "Use when the request is specific and actionable (e.g., 'Write a python CSV parser').\n"
+            "Assign experts to directly produce the requested output.\n\n"
+            
+            "Return a JSON array. Each step MUST have:\n"
+            '- "step": Step number (1, 2, 3...)\n'
+            '- "phase": Either "brainstorming" or "execution"\n'
+            '- "expert": Famous personality or expert best suited for this\n'
+            '- "question": The specific question for the expert\n'
+            '- "format": Expected output format (e.g., "bullet list", "paragraph", "code")\n\n'
+            
+            "Example (vague request - 'I need a website'):\n"
             '[\n'
-            '  {"expert": "Steve Jobs", "question": "How would you approach this problem?", "reason": "Innovation and product thinking"},\n'
-            '  {"expert": "Marie Curie", "question": "What scientific principles apply here?", "reason": "Deep scientific knowledge"}\n'
+            '  {"step": 1, "phase": "brainstorming", "expert": "Steve Wozniak", "question": "What are the key technical decisions for a modern website?", "format": "bullet list"},\n'
+            '  {"step": 2, "phase": "brainstorming", "expert": "Steve Jobs", "question": "What questions define a website\'s brand identity?", "format": "numbered list"}\n'
             "]\n\n"
+            
+            "Example (specific request - 'Write a tweet about cats'):\n"
+            '[\n'
+            '  {"step": 1, "phase": "execution", "expert": "Oscar Wilde", "question": "Write a witty tweet about cats", "format": "single tweet"}\n'
+            "]\n\n"
+            
             "Return ONLY the JSON array."
         )
         
@@ -266,6 +323,7 @@ class Orchestrator:
                     print("[Orchestrator] Agent requested clarification - returning empty plan")
                 self.current_plan = []
                 self.plan_executed = []
+                # Fallback: Treat as no plan, but since we removed tool, this shouldn't happen unless model hallucinates
                 return []
             
             # Parse the JSON plan from response
@@ -307,8 +365,19 @@ class Orchestrator:
         
         return plan
 
+    # Valid phases for two-phase planning
+    VALID_PHASES = {"brainstorming", "execution"}
+
     def _parse_json_plan(self, response: str) -> List[Dict[str, str]]:
-        """Parses and validates the JSON plan from the model response."""
+        """Parses and validates the JSON plan from the model response.
+        
+        Expected schema per item:
+        - step: int (step number)
+        - phase: str ("brainstorming" or "execution")
+        - expert: str (expert name)
+        - question: str (the question for the expert)
+        - format: str (expected output format)
+        """
         plan = []
         try:
             # Try to extract JSON from response (might have markdown blocks)
@@ -331,15 +400,33 @@ class Orchestrator:
                 return []
 
             # Validate plan structure and add valid items
-            for item in parsed_items:
-                if isinstance(item, dict) and "expert" in item and "question" in item:
-                    # Ensure reason exists
-                    if "reason" not in item:
-                        item["reason"] = "No reason provided"
-                    plan.append(item)
-                else:
+            for idx, item in enumerate(parsed_items):
+                if not isinstance(item, dict):
                     if self.verbose:
-                        print(f"[Orchestrator] Skipping invalid plan item: {item}")
+                        print(f"[Orchestrator] Skipping non-dict plan item: {item}")
+                    continue
+                
+                # Required fields: expert and question
+                if "expert" not in item or "question" not in item:
+                    if self.verbose:
+                        print(f"[Orchestrator] Skipping item missing expert/question: {item}")
+                    continue
+                
+                # Ensure step number exists (auto-assign if missing)
+                if "step" not in item:
+                    item["step"] = idx + 1
+                
+                # Validate and default phase
+                if "phase" not in item or item["phase"] not in self.VALID_PHASES:
+                    if self.verbose and "phase" in item:
+                        print(f"[Orchestrator] Invalid phase '{item.get('phase')}', defaulting to 'execution'")
+                    item["phase"] = "execution"
+                
+                # Ensure format exists
+                if "format" not in item:
+                    item["format"] = "structured response"
+                
+                plan.append(item)
             
             return plan
         except (json.JSONDecodeError, Exception) as e:
@@ -347,9 +434,14 @@ class Orchestrator:
                 print(f"[Orchestrator] Failed to parse plan JSON: {e}")
             return []
 
-    async def execute_plan(self) -> str:
+    async def execute_plan(self, user_input: str = "") -> str:
         """
         Executes the current plan by consulting each expert in sequence.
+        Before each expert call, generates a self-contained question that includes
+        all necessary context from the original request and previous expert contributions.
+        
+        Args:
+            user_input: The original user request for context
         
         Returns:
             Summary of execution status
@@ -360,37 +452,68 @@ class Orchestrator:
             return "No plan generated"
         
         if self.verbose:
-            print(f"\n[Orchestrator] Executing plan with {len(self.current_plan)} experts")
+            print(f"\\n[Orchestrator] Executing plan with {len(self.current_plan)} steps")
         
         # Emit execution started event
         await self._emit_event({
             "type": "plan_execution_started",
-            "total_experts": len(self.current_plan)
+            "total_steps": len(self.current_plan)
         })
         
-        # Execute each expert consultation
-        for idx, expert_item in enumerate(self.current_plan):
-            expert_name = expert_item.get("expert", "")
-            question = expert_item.get("question", "")
-            reason = expert_item.get("reason", "")
+        # Track accumulated context from previous experts
+        accumulated_context = []  # List of {"expert": str, "objective": str, "response": str}
+        
+        # Execute each step in the plan
+        for idx, step_item in enumerate(self.current_plan):
+            expert_name = step_item.get("expert", "")
+            base_question = step_item.get("question", "")
             
-            if not expert_name or not question:
+            # Two-phase fields
+            step_num = step_item.get("step", idx + 1)
+            phase = step_item.get("phase", "execution")
+            output_format = step_item.get("format", "structured response")
+            
+            if not expert_name or not base_question:
                 if self.verbose:
-                    print(f"[Orchestrator] Skipping invalid plan item: {expert_item}")
+                    print(f"[Orchestrator] Skipping invalid plan step: {step_item}")
                 continue
             
             try:
-                # Emit progress event
+                # Build structured prompt with context (no LLM call, just template)
+                enhanced_question = self._build_expert_prompt(
+                    question=base_question,
+                    output_format=output_format,
+                    user_input=user_input,
+                    previous_context=accumulated_context
+                )
+                
+                # Emit progress event with phase context
                 await self._emit_event({
                     "type": "plan_step_executing",
-                    "step": idx + 1,
+                    "step": step_num,
                     "total": len(self.current_plan),
                     "expert": expert_name,
-                    "reason": reason
+                    "phase": phase
                 })
                 
-                # Consult the expert
-                await self.tool_definitions.consult_expert(expert_name, question)
+                # Consult the expert with the enhanced prompt, but pass original question for display
+                response = await self.tool_definitions.consult_expert(
+                    expert_name, 
+                    enhanced_question,
+                    display_question=base_question  # Original simple question for UI
+                )
+                
+                # Extract just the response content (remove "[expert_name]: " prefix if present)
+                response_content = response
+                if response.startswith(f"[{expert_name}]:"):
+                    response_content = response[len(f"[{expert_name}]:"):].strip()
+                
+                # Add this expert's contribution to accumulated context
+                accumulated_context.append({
+                    "expert": expert_name,
+                    "phase": phase,
+                    "response": response_content[:500]  # Truncate to keep context manageable
+                })
                 
                 # Track execution
                 self.plan_executed.append(expert_name)
@@ -398,18 +521,21 @@ class Orchestrator:
                 # Emit progress event
                 await self._emit_event({
                     "type": "plan_step_completed",
-                    "step": idx + 1,
+                    "step": step_num,
                     "total": len(self.current_plan),
-                    "expert": expert_name
+                    "expert": expert_name,
+                    "phase": phase
                 })
                 
             except Exception as e:
                 if self.verbose:
-                    print(f"[Orchestrator] Error executing plan step for {expert_name}: {e}")
+                    print(f"[Orchestrator] Error executing plan step {step_num} for {expert_name}: {e}")
                 
                 await self._emit_event({
                     "type": "plan_step_error",
+                    "step": step_num,
                     "expert": expert_name,
+                    "phase": phase,
                     "error": str(e)
                 })
         
@@ -420,7 +546,54 @@ class Orchestrator:
             "total": len(self.current_plan)
         })
         
-        return f"Executed plan with {len(self.plan_executed)}/{len(self.current_plan)} experts"
+        return f"Executed plan with {len(self.plan_executed)}/{len(self.current_plan)} steps"
+
+    def _build_expert_prompt(
+        self,
+        question: str,
+        output_format: str,
+        user_input: str,
+        previous_context: List[Dict[str, str]]
+    ) -> str:
+        """
+        Builds a structured prompt for an expert using a simple template.
+        No LLM call - just efficient string formatting.
+        
+        Args:
+            question: The question for this expert
+            output_format: Expected output format (e.g., "bullet list")
+            user_input: Original user request
+            previous_context: List of previous expert contributions
+            
+        Returns:
+            A structured prompt string
+        """
+        parts = []
+        
+        # Section 1: Original request (brief context)
+        if user_input:
+            truncated_input = user_input[:300] + "..." if len(user_input) > 300 else user_input
+            parts.append(f"Request: {truncated_input}")
+        
+        # Section 2: Prior insights (if any) - just key points
+        if previous_context:
+            insights = []
+            for ctx in previous_context[-3:]:  # Only last 3 experts max
+                response = ctx.get("response", "")
+                first_sentence = response.split('.')[0][:100] if response else ""
+                if first_sentence:
+                    insights.append(f"• {ctx['expert']}: {first_sentence}")
+            if insights:
+                parts.append("Prior insights:\n" + "\n".join(insights))
+        
+        # Section 3: The actual question
+        parts.append(f"Question: {question}")
+        
+        # Section 4: Expected format
+        if output_format:
+            parts.append(f"Format: {output_format}")
+        
+        return "\n\n".join(parts)
 
     async def process(self, user_input: str) -> str:
         """
@@ -431,7 +604,7 @@ class Orchestrator:
         Returns a summary of execution.
         """
         if self.verbose:
-            print(f"\n[Orchestrator] Received input: {user_input}")
+            print(f"\\n[Orchestrator] Received input: {user_input}")
             
         # Check current session status
         is_clarification_response = False
@@ -446,9 +619,12 @@ class Orchestrator:
                     if self.verbose:
                         print(f"[Orchestrator] Handling input as clarification response")
         
-        # Update status to processing
+        # Update status to processing (non-blocking)
         if self.db_manager and self.session_id:
-            await self.db_manager.update_session_status(self.session_id, "processing", None)
+            self._run_db_task_background(
+                self.db_manager.update_session_status(self.session_id, "processing", None),
+                "session status update (processing)"
+            )
 
         # Create user_message slide for the input
         await self._create_user_message_slide(user_input, is_clarification_response=is_clarification_response, pending_interaction=pending_interaction)
@@ -468,7 +644,10 @@ class Orchestrator:
             })
             
             if self.db_manager and self.session_id:
-                await self.db_manager.update_session_status(self.session_id, "idle")
+                self._run_db_task_background(
+                    self.db_manager.update_session_status(self.session_id, "idle"),
+                    "session status update (idle after error)"
+                )
             
             return f"Error generating plan: {str(e)}"
         
@@ -488,14 +667,17 @@ class Orchestrator:
                 else:
                     # No clarification and no plan - this might be a failure or just no experts needed
                     # If it was a failure, generate_plan already emitted an error event
-                    await self.db_manager.update_session_status(self.session_id, "idle")
+                    self._run_db_task_background(
+                        self.db_manager.update_session_status(self.session_id, "idle"),
+                        "session status update (idle - no experts)"
+                    )
             
             return "No experts were selected for this query. Please try being more specific."
         
         # ===== PHASE 2: EXECUTION =====
-        # Execute the plan by consulting each expert
+        # Execute the plan by consulting each expert with full context
         try:
-            result = await self.execute_plan()
+            result = await self.execute_plan(user_input=user_input)
         except Exception as e:
             if self.verbose:
                 print(f"[Orchestrator] Error executing plan: {e}")
@@ -508,9 +690,12 @@ class Orchestrator:
             
             result = f"Error during execution: {str(e)}"
         
-        # Set session to idle after execution completes
+        # Set session to idle after execution completes (non-blocking)
         if self.db_manager and self.session_id:
-            await self.db_manager.update_session_status(self.session_id, "idle")
+            self._run_db_task_background(
+                self.db_manager.update_session_status(self.session_id, "idle"),
+                "session status update (idle after execution)"
+            )
         
         return result
 
@@ -562,7 +747,7 @@ class Orchestrator:
             if not context_items:
                 return ""
                 
-            return "\n".join(context_items[-limit:])
+            return "\\n".join(context_items[-limit:])
             
         except Exception as e:
             if self.verbose:
