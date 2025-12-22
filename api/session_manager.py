@@ -107,10 +107,7 @@ class SessionManager:
                 user_id=user_id,
                 db_manager=self.db_manager
             )
-            
-            # If resuming, we might want to load history here
-            await orchestrator.load_session_history()
-            
+             
             # Initial process if problem is provided
             if problem:
                 # Mark as processing

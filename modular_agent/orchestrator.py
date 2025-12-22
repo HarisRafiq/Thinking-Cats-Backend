@@ -285,15 +285,26 @@ class Orchestrator:
             '- "phase": Either "brainstorming" or "execution"\n'
             '- "expert": Famous personality or expert best suited for this\n'
             '- "question": The specific question for the expert\n'
-            '- "format": Expected output format (e.g., "bullet list", "paragraph", "code")\n\n'
+            '- "format": Output format that fits the question (e.g., "mermaid flowchart", "comparison table", "sequence diagram", "decision matrix", "pros/cons table", "numbered steps", "code block")\n\n'
             
             "Example (vague request - 'I need a website'):\n"
             '[\n'
-            '  {"step": 1, "phase": "brainstorming", "expert": "Steve Wozniak", "question": "What are the key technical decisions for a modern website?", "format": "bullet list"},\n'
-            '  {"step": 2, "phase": "brainstorming", "expert": "Steve Jobs", "question": "What questions define a website\'s brand identity?", "format": "numbered list"}\n'
+            '  {"step": 1, "phase": "brainstorming", "expert": "Steve Wozniak", "question": "Map the technical architecture decisions for a modern website", "format": "mermaid flowchart"},\n'
+            '  {"step": 2, "phase": "brainstorming", "expert": "Steve Jobs", "question": "Compare website platform options by user experience factors", "format": "comparison table"}\n'
             "]\n\n"
             
-            "Example (specific request - 'Write a tweet about cats'):\n"
+            "Example (strategic request - 'Should I quit my job to start a company?'):\n"
+            '[\n'
+            '  {"step": 1, "phase": "brainstorming", "expert": "Paul Graham", "question": "What are the key decision factors for leaving employment to start a company?", "format": "decision matrix"},\n'
+            '  {"step": 2, "phase": "brainstorming", "expert": "Naval Ravikant", "question": "Map the financial runway calculation for bootstrapping", "format": "formula with examples"}\n'
+            "]\n\n"
+            
+            "Example (technical request - 'How does OAuth work?'):\n"
+            '[\n'
+            '  {"step": 1, "phase": "execution", "expert": "Martin Fowler", "question": "Show the OAuth 2.0 authorization flow between client, server, and provider", "format": "mermaid sequence diagram"}\n'
+            "]\n\n"
+            
+            "Example (creative request - 'Write a tweet about cats'):\n"
             '[\n'
             '  {"step": 1, "phase": "execution", "expert": "Oscar Wilde", "question": "Write a witty tweet about cats", "format": "single tweet"}\n'
             "]\n\n"
@@ -578,9 +589,9 @@ class Orchestrator:
         # Section 2: Prior insights (if any) - just key points
         if previous_context:
             insights = []
-            for ctx in previous_context[-3:]:  # Only last 3 experts max
+            for ctx in previous_context[-4:]:  # Only last 3 experts max
                 response = ctx.get("response", "")
-                first_sentence = response.split('.')[0][:100] if response else ""
+                first_sentence = response.split('.')[0][:150] if response else ""
                 if first_sentence:
                     insights.append(f"• {ctx['expert']}: {first_sentence}")
             if insights:
@@ -698,18 +709,7 @@ class Orchestrator:
             )
         
         return result
-
-    async def load_session_history(self):
-        """
-        Simplified history loading - no longer needed for planning since generate_plan()
-        now derives questions directly from slides via get_answered_questions().
-        
-        Kept for backward compatibility but does nothing since planning no longer
-        relies on agent context.
-        """
-        if self.verbose:
-            print(f"[Orchestrator] load_session_history() called but no longer needed - planning derives from slides")
-
+ 
     async def _get_conversation_context(self, limit: int = 15) -> str:
         """
         Retrieves recent conversation context from session slides.

@@ -49,7 +49,7 @@ class UpdateRequest(BaseModel):
 class EditRequest(BaseModel):
     """Request for AI-powered artifact editing."""
     instruction: str  # Natural language edit instruction
-    model: str
+    model: str = "gemini-3-flash-preview"  # Default model for editing
     auto_commit: bool = False  # If true, commit immediately without preview
 
 
@@ -516,15 +516,49 @@ async def edit_artifact(
         raise HTTPException(status_code=403, detail="Not authorized")
     
     async def event_generator():
+        import asyncio
+        import time
         agent = ArtifactAgent(db_manager=db_manager, model_name=request.model)
         final_content = None
         plan_summary = None
         
+        # Create the async generator
+        edit_gen = agent.edit_artifact(
+            artifact_id=artifact_id,
+            instruction=request.instruction
+        )
+        
         try:
-            async for event in agent.edit_artifact(
-                artifact_id=artifact_id,
-                instruction=request.instruction
-            ):
+            # Overall timeout for the entire operation (2 minutes)
+            overall_timeout = 120.0
+            start_time = time.time()
+            
+            while True:
+                # Check overall timeout before getting next event
+                current_time = time.time()
+                elapsed = current_time - start_time
+                if elapsed > overall_timeout:
+                    yield {"event": "error", "data": json.dumps({
+                        "message": "Edit operation timed out after 2 minutes. Please try again with a simpler request."
+                    })}
+                    return
+                
+                # Get next event with timeout (45 seconds per event)
+                try:
+                    event = await asyncio.wait_for(
+                        edit_gen.__anext__(),
+                        timeout=45.0
+                    )
+                except asyncio.TimeoutError:
+                    yield {"event": "error", "data": json.dumps({
+                        "message": "No response from AI model for 45 seconds. The request may be taking too long."
+                    })}
+                    return
+                except StopAsyncIteration:
+                    # Generator exhausted normally
+                    break
+                
+                # Process the event
                 event_type = event.get("type", "message")
                 
                 if event_type == "thinking":
@@ -547,12 +581,14 @@ async def edit_artifact(
                 elif event_type == "preview":
                     final_content = event.get("content", "")
                     plan_summary = event.get("plan_summary", "")
+                    diff_info = event.get("diff", {})
                     
                     yield {"event": "preview", "data": json.dumps({
                         "content": final_content,
                         "plan_summary": plan_summary,
                         "edit_count": event.get("edit_count", 0),
-                        "edit_type": event.get("edit_type", "surgical")
+                        "edit_type": event.get("edit_type", "surgical"),
+                        "diff": diff_info
                     })}
                     
                     # Auto-commit if requested

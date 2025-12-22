@@ -7,6 +7,8 @@ Also provides intelligent editing capabilities with diff-based token efficiency.
 from typing import Dict, Any, Optional, AsyncGenerator, Tuple
 import json
 import re
+import difflib
+import asyncio
 from rapidfuzz import fuzz, process
 import markdown
 from .llm import GeminiProvider
@@ -259,6 +261,41 @@ CRITICAL: Output ONLY the deliverable content. No preambles, explanations, or me
             "valid": len(errors) == 0,
             "warnings": warnings,
             "errors": errors
+        }
+    
+    def _generate_diff(self, original_content: str, new_content: str) -> Dict[str, Any]:
+        """
+        Generates a unified diff between original and new content.
+        Returns: {
+            "diff": str (unified diff string),
+            "diff_lines": List[str] (diff lines for display),
+            "added_lines": int,
+            "removed_lines": int,
+            "changed_lines": int
+        }
+        """
+        lines1 = original_content.splitlines(keepends=True)
+        lines2 = new_content.splitlines(keepends=True)
+        
+        diff = list(difflib.unified_diff(
+            lines1,
+            lines2,
+            fromfile="Original",
+            tofile="Edited",
+            lineterm=''
+        ))
+        
+        # Count changes
+        added_lines = sum(1 for line in diff if line.startswith('+') and not line.startswith('+++'))
+        removed_lines = sum(1 for line in diff if line.startswith('-') and not line.startswith('---'))
+        changed_lines = min(added_lines, removed_lines)  # Approximate
+        
+        return {
+            "diff": ''.join(diff),
+            "diff_lines": diff,
+            "added_lines": added_lines,
+            "removed_lines": removed_lines,
+            "changed_lines": changed_lines
         }
     
     def _format_session_content(self, session_context: Dict[str, Any]) -> str:
@@ -646,19 +683,42 @@ Analyze the instruction and produce the minimal set of changes needed. Prefer su
         
         try:
             # Get edit plan (non-streaming for speed)
-            response = await self.provider.generate(
-                prompt=prompt,
-                system_instruction=self.EDITOR_SYSTEM_PROMPT
-            )
+            # Add timeout of 90 seconds for LLM call
+            try:
+                response = await asyncio.wait_for(
+                    self.provider.generate(
+                        prompt=prompt,
+                        system_instruction=self.EDITOR_SYSTEM_PROMPT
+                    ),
+                    timeout=90.0
+                )
+            except asyncio.TimeoutError:
+                yield {"type": "error", "message": "Edit request timed out. The AI model took too long to respond. Please try again with a simpler request."}
+                return
+            except Exception as e:
+                yield {"type": "error", "message": f"Failed to generate edit plan: {str(e)}"}
+                return
+            
+            if not response or not response.strip():
+                yield {"type": "error", "message": "Empty response from AI model"}
+                return
             
             # Parse JSON response
             response_text = response.strip()
             if response_text.startswith("```"):
-                response_text = response_text.split("```")[1]
-                if response_text.startswith("json"):
-                    response_text = response_text[4:]
+                # Extract JSON from code block
+                parts = response_text.split("```")
+                if len(parts) >= 2:
+                    response_text = parts[1]
+                    if response_text.startswith("json"):
+                        response_text = response_text[4:]
+                    response_text = response_text.strip()
             
-            edit_plan = json.loads(response_text)
+            try:
+                edit_plan = json.loads(response_text)
+            except json.JSONDecodeError as e:
+                yield {"type": "error", "message": f"Failed to parse AI response as JSON: {str(e)}. Response preview: {response_text[:200]}..."}
+                return
             
             plan_summary = edit_plan.get("plan_summary", "Applying edits")
             edit_type = edit_plan.get("edit_type", "surgical")
@@ -779,7 +839,10 @@ Analyze the instruction and produce the minimal set of changes needed. Prefer su
             # Validate the edited content
             validation = self._validate_markdown(new_content)
             
-            # Yield the preview with validation info
+            # Generate diff between original and new content
+            diff_info = self._generate_diff(current_content, new_content)
+            
+            # Yield the preview with validation info and diff
             yield {
                 "type": "preview",
                 "content": new_content,
@@ -787,11 +850,15 @@ Analyze the instruction and produce the minimal set of changes needed. Prefer su
                 "edit_count": len(applied_edits),
                 "edit_type": edit_type,
                 "validation": validation,
-                "skipped_count": len(skipped_edits)
+                "skipped_count": len(skipped_edits),
+                "diff": diff_info
             }
             
         except json.JSONDecodeError as e:
             yield {"type": "error", "message": f"Failed to parse edit response: {str(e)}"}
         except Exception as e:
-            yield {"type": "error", "message": f"Edit failed: {str(e)}"}
+            import traceback
+            error_details = str(e)
+            # Don't expose full traceback to user, but log it
+            yield {"type": "error", "message": f"Edit failed: {error_details}"}
 
