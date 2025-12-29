@@ -410,9 +410,10 @@ class ImageGenerator:
             
             # Get template info for logging
             template_info = get_template_info(num_cards, image_size, card_padding)
-            print(f"[ImageGenerator] Generating {num_cards} cards in {template_info['grid_size']}x{template_info['grid_size']} grid")
+            grid_size = template_info['grid_size']
+            print(f"[ImageGenerator] Generating {num_cards} cards in {grid_size}x{grid_size} grid")
             
-            # Step 1: Generate template
+            # Step 1: Generate clean template without labels (to avoid AI preserving text)
             if self.verbose:
                 print(f"[ImageGenerator] Generating template for {num_cards} cards...")
             
@@ -425,12 +426,22 @@ class ImageGenerator:
             if self.verbose:
                 print(f"[ImageGenerator] Template generated: {len(template_bytes)} bytes")
             
-            # Step 2: Generate composite image using template
+            # Step 2: Generate composite image using template with enhanced prompt
             if self.verbose:
                 print(f"[ImageGenerator] Generating composite image with prompt...")
             
+            # Enhance prompt - simpler, more direct approach that works better with image models
+            enhanced_prompt = (
+                f"You are given a 2x3 grid template with 6 black-bordered rectangular cells arranged in 2 rows and 3 columns. "
+                f"Your task is to fill each of the 6 cells with a detailed, complete image based on the following instruction: {prompt}. "
+                f"IMPORTANT: Keep all images PERFECTLY within their black-bordered rectangles. Do not draw outside the borders. "
+                f"Each cell must contain a complete, fully-rendered image that fills the entire cell. "
+                f"The output must be exactly the same size as the template (1024x1024 pixels). "
+                f"Maintain the grid structure exactly as shown in the template."
+            )
+            
             result = await self.generate_image_from_template(
-                prompt=prompt,
+                prompt=enhanced_prompt,
                 template_bytes=template_bytes,
                 template_mime_type="image/png"
             )

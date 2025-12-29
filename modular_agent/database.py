@@ -663,7 +663,7 @@ class DatabaseManager:
         return str(result.inserted_id)
 
     async def get_artifact(self, artifact_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieves an artifact by ID."""
+        """Retrieves an artifact by ID with version count."""
         if self.db is None:
             await self.connect()
         
@@ -671,19 +671,28 @@ class DatabaseManager:
             artifact = await self.db.artifacts.find_one({"_id": ObjectId(artifact_id)})
             if artifact:
                 artifact['artifact_id'] = str(artifact['_id'])
+                artifact_id_str = artifact['artifact_id']
                 del artifact['_id']
+                
+                # Get version count
+                version_count = await self.db.artifact_versions.count_documents({"artifact_id": artifact_id_str})
+                artifact['version_count'] = version_count
             return artifact
         except Exception as e:
             print(f"Error retrieving artifact {artifact_id}: {e}")
             return None
 
-    async def get_user_artifacts(self, user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+    async def get_user_artifacts(self, user_id: str, limit: int = 50, search: Optional[str] = None) -> List[Dict[str, Any]]:
         """Retrieves all artifacts for a user with version count."""
         if self.db is None:
             await self.connect()
         
+        query = {"user_id": user_id}
+        if search:
+            query["content"] = {"$regex": search, "$options": "i"}
+
         # Get artifacts
-        cursor = self.db.artifacts.find({"user_id": user_id}).sort("updated_at", -1).limit(limit)
+        cursor = self.db.artifacts.find(query).sort("updated_at", -1).limit(limit)
         artifacts = await cursor.to_list(length=limit)
         
         # Get version counts in one aggregation
@@ -780,10 +789,11 @@ class DatabaseManager:
         artifact_id: str, 
         content: str, 
         edit_instruction: str,
-        plan_summary: str
+        plan_summary: str,
+        version_type: str = "edit"  # "edit" = AI edit, "manual" = manual edit
     ) -> str:
         """
-        Creates a version snapshot for an AI edit.
+        Creates a version snapshot for an edit.
         Edit versions are like 'commits' - each captures a meaningful change.
         """
         if self.db is None:
@@ -792,11 +802,178 @@ class DatabaseManager:
         version = {
             "artifact_id": artifact_id,
             "content": content,
-            "version_type": "edit",  # edit = from AI editing
+            "version_type": version_type,  # "edit" = AI edit, "manual" = manual edit, "generation" = from session
             "edit_instruction": edit_instruction,  # What the user asked for
             "plan_summary": plan_summary,  # What the AI did (commit message)
             "created_at": datetime.utcnow()
         }
+        
+        result = await self.db.artifact_versions.insert_one(version)
+        
+        # Update artifact content and timestamp
+        await self.db.artifacts.update_one(
+            {"_id": ObjectId(artifact_id)},
+            {"$set": {
+                "content": content,
+                "updated_at": datetime.utcnow()
+            }}
+        )
+        
+        return str(result.inserted_id)  # Return version ID, not artifact ID
+
+    async def get_session_linked_artifacts(self, session_id: str) -> List[Dict[str, Any]]:
+        """Retrieves artifacts that have versions linked to this session."""
+        if self.db is None:
+            await self.connect()
+            
+        # Find all versions for this session
+        cursor = self.db.artifact_versions.find({"session_id": session_id})
+        versions = await cursor.to_list(length=100)
+        
+        artifact_ids = list(set(v["artifact_id"] for v in versions))
+        if not artifact_ids:
+            return []
+            
+        # Get the artifacts
+        cursor = self.db.artifacts.find({"_id": {"$in": [ObjectId(aid) for aid in artifact_ids]}})
+        artifacts = await cursor.to_list(length=len(artifact_ids))
+        
+        for artifact in artifacts:
+            artifact['artifact_id'] = str(artifact['_id'])
+            del artifact['_id']
+            
+        return artifacts
+
+    async def save_artifact_suggestions(self, session_id: str, actions: List[str]):
+        """Saves or updates artifact suggestions for a session."""
+        if self.db is None:
+            await self.connect()
+            
+        await self.db.artifact_suggestions.update_one(
+            {"session_id": session_id},
+            {
+                "$set": {
+                    "actions": [{"action": a, "selected": False} for a in actions],
+                    "updated_at": datetime.utcnow()
+                },
+                "$setOnInsert": {"created_at": datetime.utcnow()}
+            },
+            upsert=True
+        )
+
+    async def get_artifact_suggestions(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves artifact suggestions for a session."""
+        if self.db is None:
+            await self.connect()
+            
+        suggestions = await self.db.artifact_suggestions.find_one({"session_id": session_id})
+        if suggestions:
+            suggestions['id'] = str(suggestions['_id'])
+            del suggestions['_id']
+        return suggestions
+
+    async def mark_suggestion_selected(self, session_id: str, action: str):
+        """Marks a specific suggestion as selected."""
+        if self.db is None:
+            await self.connect()
+            
+        await self.db.artifact_suggestions.update_one(
+            {"session_id": session_id, "actions.action": action},
+            {"$set": {"actions.$.selected": True, "updated_at": datetime.utcnow()}}
+        )
+
+    # =====================
+    # Social Generation Methods
+    # =====================
+
+    async def create_social_generation(self, session_id: str, prompt: str, cards: List[Dict[str, str]], story: Optional[str] = None, story_type: Optional[str] = None) -> str:
+        """
+        Creates a new social generation record.
+        Schema: {
+            session_id: str,
+            prompt: str (the master visual prompt or intent),
+            story: str (optional narrative summary),
+            story_type: str (optional story type used),
+            cards: [{url, caption, visual_description}],
+            platform_variants: dict (optional platform-optimized versions),
+            created_at: datetime
+        }
+        """
+        if self.db is None:
+            await self.connect()
+
+        gen_data = {
+            "session_id": session_id,
+            "prompt": prompt,
+            "cards": cards,
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow()
+        }
+        
+        if story:
+            gen_data["story"] = story
+            
+        if story_type:
+            gen_data["story_type"] = story_type
+
+        result = await self.db.social_generations.insert_one(gen_data)
+        return str(result.inserted_id)
+
+    async def get_social_generations(self, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Retrieves social generations for a session."""
+        if self.db is None:
+            await self.connect()
+
+        cursor = self.db.social_generations.find({"session_id": session_id}).sort("created_at", -1).limit(limit)
+        gens = await cursor.to_list(length=limit)
+
+        for gen in gens:
+            gen['id'] = str(gen['_id'])
+            gen['created_at'] = gen['created_at'].isoformat()
+            if 'updated_at' in gen:
+                gen['updated_at'] = gen['updated_at'].isoformat()
+            del gen['_id']
+
+        return gens
+    
+    async def get_social_generation_by_id(self, generation_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves a single social generation by ID."""
+        if self.db is None:
+            await self.connect()
+        
+        from bson import ObjectId
+        try:
+            gen = await self.db.social_generations.find_one({"_id": ObjectId(generation_id)})
+            if gen:
+                gen['id'] = str(gen['_id'])
+                gen['created_at'] = gen['created_at'].isoformat()
+                if 'updated_at' in gen:
+                    gen['updated_at'] = gen['updated_at'].isoformat()
+                del gen['_id']
+            return gen
+        except Exception:
+            return None
+    
+    async def update_social_generation_platforms(self, generation_id: str, platform_variants: Dict[str, Any]) -> bool:
+        """Updates a social generation with platform-optimized variants."""
+        if self.db is None:
+            await self.connect()
+        
+        from bson import ObjectId
+        try:
+            result = await self.db.social_generations.update_one(
+                {"_id": ObjectId(generation_id)},
+                {
+                    "$set": {
+                        "platform_variants": platform_variants,
+                        "updated_at": datetime.utcnow()
+                    }
+                }
+            )
+            return result.modified_count > 0
+        except Exception:
+            return False
+
         
         result = await self.db.artifact_versions.insert_one(version)
         
@@ -963,3 +1140,173 @@ class DatabaseManager:
         except Exception as e:
             print(f"Error getting session context {session_id}: {e}")
             return None
+
+    # =====================
+    # Deliverables Methods (Block-Based)
+    # =====================
+
+    async def create_deliverable(self, user_id: str, deliverable_type: str, title: str, session_id: Optional[str] = None, status: str = "draft") -> str:
+        """Create new deliverable with blocks array."""
+        if self.db is None:
+            await self.connect()
+        
+        deliverable = {
+            "user_id": user_id,
+            "session_id": session_id,
+            "deliverable_type": deliverable_type,  # "document", "social", "report"
+            "title": title,
+            "blocks": [],
+            "status": status,  # "draft", "generating", "complete", "failed"
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow()
+        }
+        
+        result = await self.db.deliverables.insert_one(deliverable)
+        return str(result.inserted_id)
+
+    async def update_deliverable_status(self, deliverable_id: str, status: str):
+        """Update deliverable status."""
+        if self.db is None:
+            await self.connect()
+        
+        from bson import ObjectId
+        
+        await self.db.deliverables.update_one(
+            {"_id": ObjectId(deliverable_id)},
+            {
+                "$set": {
+                    "status": status,
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+
+    async def add_block(self, deliverable_id: str, block_type: str, content: Dict[str, Any], order: Optional[int] = None) -> str:
+        """Add block to deliverable."""
+        if self.db is None:
+            await self.connect()
+        
+        from bson import ObjectId
+        import uuid
+        
+        # Get current max order if not specified
+        if order is None:
+            deliverable = await self.db.deliverables.find_one({"_id": ObjectId(deliverable_id)})
+            if deliverable and deliverable.get("blocks"):
+                order = max(b.get("order", 0) for b in deliverable["blocks"]) + 1
+            else:
+                order = 0
+        
+        block = {
+            "block_id": str(uuid.uuid4()),
+            "type": block_type,
+            "order": order,
+            "content": content,
+            "metadata": {
+                "created_at": datetime.utcnow(),
+                "ai_generated": True,
+                "copyable": block_type in ["text", "heading", "code", "quote"],
+                "downloadable": block_type == "image"
+            }
+        }
+        
+        await self.db.deliverables.update_one(
+            {"_id": ObjectId(deliverable_id)},
+            {
+                "$push": {"blocks": block},
+                "$set": {"updated_at": datetime.utcnow()}
+            }
+        )
+        
+        return block["block_id"]
+
+    async def update_block(self, deliverable_id: str, block_id: str, content: Dict[str, Any]):
+        """Update specific block content."""
+        if self.db is None:
+            await self.connect()
+        
+        from bson import ObjectId
+        
+        await self.db.deliverables.update_one(
+            {"_id": ObjectId(deliverable_id), "blocks.block_id": block_id},
+            {
+                "$set": {
+                    "blocks.$.content": content,
+                    "blocks.$.metadata.updated_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+
+    async def get_deliverable(self, deliverable_id: str) -> Optional[Dict[str, Any]]:
+        """Get deliverable with all blocks."""
+        if self.db is None:
+            await self.connect()
+        
+        from bson import ObjectId
+        
+        deliverable = await self.db.deliverables.find_one({"_id": ObjectId(deliverable_id)})
+        if deliverable:
+            deliverable["id"] = str(deliverable["_id"])
+            del deliverable["_id"]
+            # Sort blocks by order
+            if "blocks" in deliverable:
+                deliverable["blocks"].sort(key=lambda b: b.get("order", 0))
+        return deliverable
+
+    async def get_user_deliverables(self, user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get all deliverables for a user."""
+        if self.db is None:
+            await self.connect()
+        
+        cursor = self.db.deliverables.find({"user_id": user_id}).sort("created_at", -1).limit(limit)
+        deliverables = await cursor.to_list(length=limit)
+        
+        for d in deliverables:
+            d["id"] = str(d["_id"])
+            del d["_id"]
+            if "blocks" in d:
+                d["blocks"].sort(key=lambda b: b.get("order", 0))
+        
+        return deliverables
+
+    async def delete_deliverable(self, deliverable_id: str):
+        """Delete deliverable and all its blocks."""
+        if self.db is None:
+            await self.connect()
+        
+        from bson import ObjectId
+        await self.db.deliverables.delete_one({"_id": ObjectId(deliverable_id)})
+
+    async def cache_suggestions(self, session_id: str, suggestions: List[Dict[str, Any]]):
+        """Cache deliverable suggestions for a session."""
+        if self.db is None:
+            await self.connect()
+        
+        from bson import ObjectId
+        
+        await self.db.sessions.update_one(
+            {"_id": ObjectId(session_id)},
+            {
+                "$set": {
+                    "cached_suggestions": suggestions,
+                    "suggestions_cached_at": datetime.utcnow()
+                }
+            }
+        )
+
+    async def get_cached_suggestions(self, session_id: str) -> Optional[List[Dict[str, Any]]]:
+        """Get cached suggestions for a session."""
+        if self.db is None:
+            await self.connect()
+        
+        from bson import ObjectId
+        
+        session = await self.db.sessions.find_one(
+            {"_id": ObjectId(session_id)},
+            {"cached_suggestions": 1, "suggestions_cached_at": 1}
+        )
+        
+        if session and "cached_suggestions" in session:
+            return session["cached_suggestions"]
+        return None

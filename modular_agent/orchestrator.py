@@ -749,7 +749,195 @@ class Orchestrator:
                 
             return "\\n".join(context_items[-limit:])
             
+            
         except Exception as e:
             if self.verbose:
                 print(f"[Orchestrator] Error getting conversation context: {e}")
             return ""
+
+    async def generate_social_content_plan(self, session_id: str, instruction: str = None) -> List[Dict[str, str]]:
+        """
+        Generates a plan for social media content based on the session history.
+        Returns a list of 6 items, each with a caption and visual description.
+        If instruction is provided, uses it to refine the style/content.
+        """
+        if self.verbose:
+            print(f"[Orchestrator] Generating social content plan for session {session_id} (Instruction: {instruction})")
+            
+        # Get conversation context
+        # We need to temporarily set session_id if it's different (though typically Orchestrator is per request)
+        # For now, assume self.session_id is already set or we use the passed one
+        original_session_id = self.session_id
+        self.session_id = session_id
+        
+        context = await self._get_conversation_context(limit=50)
+        self.session_id = original_session_id # Restore
+        
+        if not context:
+            if self.verbose:
+                print("[Orchestrator] No context found for social plan")
+            return []
+
+    async def generate_social_post(
+        self,
+        platform: str,
+        caption: str,
+        visual_description: str
+    ) -> str:
+        """
+        Generates a platform-specific social media post using the provided caption and
+        visual description as creative context.
+
+        Args:
+            platform: Target platform (e.g., "twitter", "x", "instagram", "linkedin", "facebook").
+            caption: Short punchy caption or headline to inspire the post.
+            visual_description: Brief description of the accompanying visual.
+
+        Returns:
+            Post text tailored for the requested platform.
+        """
+        try:
+            platform_key = (platform or "").strip().lower()
+            if platform_key == "x":
+                platform_key = "twitter"
+
+            # Platform-specific guidance
+            guidance_map = {
+                "twitter": (
+                    "Write a single tweet (max 280 chars). Keep it crisp,"
+                    " witty, and high-signal. Optional 1-2 short hashtags."
+                    " Avoid excessive emojis or links. Output ONLY the tweet."
+                ),
+                "instagram": (
+                    "Write an Instagram caption in 1-2 short lines."
+                    " Add 4-8 relevant lowercase hashtags at the end."
+                    " Keep it aesthetic, concise, and friendly."
+                    " Output ONLY the caption body."
+                ),
+                "linkedin": (
+                    "Write a concise LinkedIn post (2-4 sentences)."
+                    " Professional tone, actionable insight."
+                    " Optionally include 1-2 tasteful hashtags."
+                    " Output ONLY the post text."
+                ),
+                "facebook": (
+                    "Write a friendly Facebook post (1-2 sentences)."
+                    " Conversational, approachable."
+                    " Avoid overusing hashtags or emojis."
+                    " Output ONLY the post text."
+                ),
+            }
+
+            guidance = guidance_map.get(platform_key, (
+                "Write a concise social post (1-2 sentences)."
+                " Tailor tone to a general audience."
+                " Output ONLY the post text."
+            ))
+
+            system_instruction = (
+                "You are an expert social media copywriter."
+                " Craft platform-appropriate, safe, and non-harmful content."
+                " Do not include disclaimers, prefaces, or metadata."
+                " Avoid offensive or unsafe content."
+            )
+
+            prompt = (
+                f"Platform: {platform_key}\n"
+                f"Caption: {caption.strip()}\n"
+                f"Visual: {visual_description.strip()}\n\n"
+                f"Instructions: {guidance}\n"
+            )
+
+            # Use lightweight provider optimized for short copy
+            response = await self._one_liner_provider.generate_content_async(
+                prompt=prompt,
+                system_instruction=system_instruction
+            )
+
+            text = response.text if getattr(response, "text", None) else ""
+            usage = self._one_liner_provider.get_token_usage(response)
+            # Log usage in background
+            self._log_usage_background(
+                usage,
+                model=self._one_liner_provider.model_name,
+                prompt=prompt,
+                response=text
+            )
+
+            # Minimal post-processing
+            cleaned = (text or "").strip()
+
+            # Enforce Twitter length limit defensively
+            if platform_key == "twitter" and len(cleaned) > 280:
+                # Trim to last full word under limit
+                trimmed = cleaned[:280]
+                last_space = trimmed.rfind(" ")
+                if last_space > 0:
+                    cleaned = trimmed[:last_space].strip()
+                else:
+                    cleaned = trimmed.strip()
+
+            return cleaned
+
+        except Exception as e:
+            if self.verbose:
+                print(f"[Orchestrator] Error generating social post: {e}")
+            # Surface a simple error string upward; router will handle HTTPException
+            raise
+            
+        instruction_text = ""
+        if instruction:
+            instruction_text = (
+                f"\n\nUSER REFINEMENT INSTRUCTION:\n"
+                f"The user wants to refine the previous output with this instruction: \"{instruction}\"\n"
+                f"Ensure the captions and visual descriptions adhere strictly to this request."
+            )
+
+        prompt = (
+            f"Analyze the following conversation and extract 6 key insights, quotes, or transformative ideas.\n"
+            f"For EACH insight, create a 'Social Card'.\n\n"
+            f"Conversation History:\n{context}\n"
+            f"{instruction_text}\n"
+            f"Task:\n"
+            f"1. Identify 6 distinct, high-impact concepts discussed.\n"
+            f"2. For each, write a short, punchy, viral-style CAPTION (max 10 words).\n"
+            f"3. For each, write a detailed VISUAL DESCRIPTION for an AI image generator. "
+            f"The visual should be abstract, high-quality, 3D render style, or minimalistic digital art. "
+            f"Avoid text in the image. Focus on metaphors, lighting, and composition.\n\n"
+            f"Return ONLY a JSON array of 6 objects:\n"
+            '[\n'
+            '  {"caption": "Start small.", "visual_description": "A single glowing ember in a dark void, cinematic lighting"},\n'
+            '  {"caption": "Think big.", "visual_description": "A vast nebula expanding into the cosmos, 8k resolution"}\n'
+            ']'
+        )
+        
+        try:
+            # unique usage tracking for this? keeping it simple for now
+            response, _ = await self.agent.chat(prompt)
+            
+            # Parse JSON
+            json_str = response
+            if "```json" in response:
+                json_str = response.split("```json")[1].split("```")[0].strip()
+            elif "```" in response:
+                json_str = response.split("```")[1].split("```")[0].strip()
+                
+            json_match = re.search(r'\[.*\]', json_str, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+                
+            plan = json.loads(json_str)
+            
+            # Validation
+            if isinstance(plan, list) and len(plan) > 0:
+                # Ensure we have exactly 6 or trim/pad?
+                # The prompt asks for 6. Let's return what we got, but capped at 6 for grid logic safety later
+                return plan[:6]
+                
+            return []
+            
+        except Exception as e:
+            if self.verbose:
+                print(f"[Orchestrator] Error generating social plan: {e}")
+            return []
+

@@ -11,11 +11,11 @@ import io
 def generate_grid_template(
     num_cards: int,
     image_size: int = 1024,
-    card_padding: int = 10,
-    background_color: Tuple[int, int, int] = (240, 240, 240),
+    card_padding: int = 20,
+    background_color: Tuple[int, int, int] = (50, 50, 50),
     card_color: Tuple[int, int, int] = (255, 255, 255),
-    border_color: Tuple[int, int, int] = (200, 200, 200),
-    border_width: int = 2
+    border_color: Tuple[int, int, int] = (0, 0, 0),
+    border_width: int = 8
 ) -> bytes:
     """
     Generate a grid template for multi-image generation.
@@ -92,13 +92,13 @@ def generate_labeled_grid_template(
     num_cards: int,
     labels: list = None,
     image_size: int = 1024,
-    card_padding: int = 10,
-    background_color: Tuple[int, int, int] = (240, 240, 240),
+    card_padding: int = 20,
+    background_color: Tuple[int, int, int] = (50, 50, 50),
     card_color: Tuple[int, int, int] = (255, 255, 255),
-    border_color: Tuple[int, int, int] = (200, 200, 200),
-    border_width: int = 2,
-    font_scale: float = 1.0,
-    font_color: Tuple[int, int, int] = (100, 100, 100)
+    border_color: Tuple[int, int, int] = (0, 0, 0),
+    border_width: int = 8,
+    font_scale: float = 2.5,
+    font_color: Tuple[int, int, int] = (0, 0, 0)
 ) -> bytes:
     """
     Generate a labeled grid template with text placeholders.
@@ -184,7 +184,7 @@ def generate_labeled_grid_template(
     return encoded_img.tobytes()
 
 
-def get_template_info(num_cards: int, image_size: int = 1024, card_padding: int = 10) -> dict:
+def get_template_info(num_cards: int, image_size: int = 1024, card_padding: int = 20) -> dict:
     """
     Get information about a template without generating it.
     

@@ -31,22 +31,35 @@ class GCSUtils:
     def cors_configuration(self):
         """Set a bucket's CORS policies configuration."""
         bucket = self._get_bucket()
+        
+        # Reload to get latest metadata
+        bucket.reload()
+        
+        # Set CORS configuration
         bucket.cors = [
             {
                 "origin": ["*"],
                 "responseHeader": [
                     "Content-Type",
-                    "x-goog-resumable"],
-                "method": ['GET','PUT', 'POST'],
+                    "Access-Control-Allow-Origin",
+                    "x-goog-resumable"
+                ],
+                "method": ['GET', 'PUT', 'POST', 'HEAD', 'OPTIONS'],
                 "maxAgeSeconds": 3600
             }
         ]
-        bucket.patch()
+        
+        # Update the bucket
+        bucket.update()
+        
+        # Reload to verify
+        bucket.reload()
+        
         print(f"Set CORS policies for bucket {bucket.name} is {bucket.cors}")
         return bucket
 
     def upload_file_to_gcs(self, file_name: str, file_data, content_type: str = None) -> str:
-        """Upload a file to Google Cloud Storage."""
+        """Upload a file to Google Cloud Storage with CORS-friendly metadata."""
         bucket = self._get_bucket()
         blob = bucket.blob(file_name)
         
@@ -60,6 +73,10 @@ class GCSUtils:
                 content_type = 'image/gif'
             else:
                 content_type = 'application/octet-stream'
+        
+        # Set CORS-friendly metadata
+        blob.metadata = {'Cache-Control': 'public, max-age=3600'}
+        blob.cache_control = 'public, max-age=3600'
         
         blob.upload_from_file(file_data, content_type=content_type)
         return f"gs://{self.bucket_name}/{file_name}"

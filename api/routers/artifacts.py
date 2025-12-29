@@ -66,12 +66,50 @@ class CommitEditRequest(BaseModel):
 
 @router.get("")
 async def list_artifacts(
+    search: Optional[str] = Query(None),
     current_user: Dict[str, Any] = Depends(get_current_user),
     db_manager = Depends(get_db_manager)
 ):
     """List all artifacts for current user with version counts."""
-    artifacts = await db_manager.get_user_artifacts(user_id=str(current_user["_id"]))
+    artifacts = await db_manager.get_user_artifacts(
+        user_id=str(current_user["_id"]),
+        search=search
+    )
     return {"artifacts": artifacts}
+
+
+@router.get("/session/{session_id}")
+async def get_session_artifacts_info(
+    session_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db_manager = Depends(get_db_manager)
+):
+    """
+    Get all artifact-related info for a specific session:
+    1. Linked artifacts (already contributed to)
+    2. Persistent suggestions
+    """
+    user_id = str(current_user["_id"])
+    
+    # Verify session ownership
+    session = await db_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.get("user_id") != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    # Get linked artifacts
+    linked_artifacts = await db_manager.get_session_linked_artifacts(session_id)
+    
+    # Get suggestions
+    agent = ArtifactAgent(db_manager=db_manager, model_name=session.get("model"))
+    suggestions_result = await agent.get_suggestions(session_id=session_id)
+    
+    return {
+        "linked_artifacts": linked_artifacts,
+        "suggestions": suggestions_result.get("actions", []),
+        "allow_custom": suggestions_result.get("allow_custom", True)
+    }
 
 
 @router.get("/{artifact_id}")
@@ -697,7 +735,8 @@ async def update_artifact(
                 artifact_id=artifact_id,
                 content=new_content,
                 edit_instruction="Manual edit",
-                plan_summary="User manually edited the artifact"
+                plan_summary="User manually edited the artifact",
+                version_type="manual"
             )
         else:
             # Content unchanged, just update status if needed

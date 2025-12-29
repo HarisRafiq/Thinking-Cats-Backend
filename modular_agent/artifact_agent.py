@@ -338,7 +338,8 @@ CRITICAL: Output ONLY the deliverable content. No preambles, explanations, or me
     
     async def get_suggestions(
         self,
-        session_id: str
+        session_id: str,
+        force_refresh: bool = False
     ) -> Dict[str, Any]:
         """
         Analyzes session context and returns simple action suggestions.
@@ -347,6 +348,19 @@ CRITICAL: Output ONLY the deliverable content. No preambles, explanations, or me
         Returns:
             {"actions": ["Twitter thread", "Business plan", ...], "allow_custom": true}
         """
+        if not force_refresh:
+            # Check for existing suggestions
+            existing = await self.db_manager.get_artifact_suggestions(session_id)
+            if existing and existing.get("actions"):
+                # Filter out already selected ones
+                available_actions = [a["action"] for a in existing["actions"] if not a.get("selected")]
+                if available_actions:
+                    return {
+                        "actions": available_actions,
+                        "allow_custom": True,
+                        "from_cache": True
+                    }
+
         # Get session context
         session_context = await self.db_manager.get_session_context(session_id)
         if not session_context:
@@ -376,6 +390,10 @@ What does this user NEED? What deliverables would be most useful for their goal?
             
             result = json.loads(response_text)
             result["allow_custom"] = True
+            
+            # Save to DB
+            if "actions" in result:
+                await self.db_manager.save_artifact_suggestions(session_id, result["actions"])
             
             return result
             
@@ -429,6 +447,8 @@ What does this user NEED? What deliverables would be most useful for their goal?
             # User selected a suggested action
             what_to_create = action
             display_name = action.lower()
+            # Mark as selected in DB
+            await self.db_manager.mark_suggestion_selected(session_id, action)
         else:
             yield {"type": "error", "message": "No action or custom prompt provided"}
             return

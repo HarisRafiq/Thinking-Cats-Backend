@@ -11,7 +11,7 @@ async def split_grid_image(
     image_bytes: bytes,
     num_cards: int,
     image_size: int = 1024,
-    card_padding: int = 10,
+    card_padding: int = 20,
     verbose: bool = False
 ) -> List[bytes]:
     """
