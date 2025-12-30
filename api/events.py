@@ -26,7 +26,7 @@ class ConsultStartEvent(BaseEvent):
     fictional_name: str  # Fictional display name (e.g., "Steve Paws") - used by frontend
     question: str
     type: str = "consult_start"
-    one_liner: Optional[str] = None
+    role: Optional[str] = None  # Two-word role description (e.g., "Innovation Visionary")
 
 
 @dataclass
@@ -36,7 +36,7 @@ class ConsultEndEvent(BaseEvent):
     fictional_name: str  # Fictional display name - used by frontend
     response: str
     type: str = "consult_end"
-    one_liner: Optional[str] = None  # Include for consistency and easy access
+    role: Optional[str] = None  # Two-word role description
 
 
 @dataclass

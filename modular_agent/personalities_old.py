@@ -80,7 +80,7 @@ class PersonalityManager:
             
         Returns:
             (Personality, empty usage dict since no LLM call is made)
-        """
+        \"\"\"
         
         # No caching needed since we're not generating anything
         # Simply create the personality with provided data
@@ -100,3 +100,60 @@ class PersonalityManager:
         
         # Return empty usage since no LLM call
         return personality, {'input_tokens': 0, 'output_tokens': 0, 'thinking_tokens': 0, 'total_tokens': 0}
+    
+    async def _generate_one_liner_and_fictional_name(self, name: str, provider=None, theme: str = "cat") -> Tuple[str, str, Dict[str, int]]:
+        """Generates both a one-liner description and a fictional name for a famous person."""
+        usage = {'input_tokens': 0, 'output_tokens': 0, 'thinking_tokens': 0, 'total_tokens': 0}
+        
+        if provider is None:
+            # Fallback: return simple descriptions if no provider provided
+            return f"Famous figure: {name}", name, usage
+        
+        try:
+            prompt = (
+                f"For the famous person {name}, provide:\n"
+                f"1. A fictional {theme}-themed name inspired by the person’s real name. "
+                f"Ensure it is clearly humorous, playful and legally safe. But it should be simple for readers to pick up the hint for real person.\n"
+                f"2. A concise one-liner to highlight this fictional characters achievements. Be witty and funny. Max 10 words.\n\n"
+                f"Return a JSON object with keys 'one_liner' and 'fictional_name'."
+            )
+            
+            generation_config = {"response_mime_type": "application/json"}
+            
+            # Use provider to generate content
+            if hasattr(provider, 'generate_content_async'):
+                response = await provider.generate_content_async(prompt, generation_config=generation_config)
+            else:
+                response = provider.generate_content(prompt, generation_config=generation_config)
+            
+            # Extract usage
+            if hasattr(provider, 'get_token_usage'):
+                usage = provider.get_token_usage(response)
+            
+            text = response.text.strip()
+            
+            # Parse the JSON response
+            import json
+            try:
+                data = json.loads(text)
+                one_liner = data.get('one_liner')
+                fictional_name = data.get('fictional_name')
+            except json.JSONDecodeError:
+                # Fallback if parsing failed
+                one_liner = None
+                fictional_name = None
+            
+            # Fallback if parsing failed or missing keys
+            if not one_liner or not fictional_name:
+                one_liner = f"Famous figure: {name}"
+                fictional_name = name
+            
+            # Ensure we have valid values
+            one_liner = one_liner[:100] if one_liner else f"Famous figure: {name}"
+            fictional_name = fictional_name if fictional_name else name
+            
+            return one_liner, fictional_name, usage
+        except Exception as e:
+            # Fallback on error
+            print(f"Error generating dynamic personality: {e}")
+            return f"Famous figure: {name}", name, usage

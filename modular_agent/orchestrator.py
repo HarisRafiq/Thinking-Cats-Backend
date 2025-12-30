@@ -283,30 +283,32 @@ class Orchestrator:
             "Return a JSON array. Each step MUST have:\n"
             '- "step": Step number (1, 2, 3...)\n'
             '- "phase": Either "brainstorming" or "execution"\n'
-            '- "expert": Famous personality or expert best suited for this\n'
+            '- "expert": Famous personality or expert best suited for this (real name like "Steve Jobs")\n'
+            '- "fictional_name": A cat-themed playful name inspired by the expert (e.g., "Whisker Jobs", "Marie Purrie")\n'
+            '- "role": Two-word description of their expertise (e.g., "Innovation Visionary", "Physics Pioneer")\n'
             '- "question": The specific question for the expert\n'
             '- "format": Output format that fits the question (e.g., "mermaid flowchart", "comparison table", "sequence diagram", "decision matrix", "pros/cons table", "numbered steps", "code block")\n\n'
             
             "Example (vague request - 'I need a website'):\n"
             '[\n'
-            '  {"step": 1, "phase": "brainstorming", "expert": "Steve Wozniak", "question": "Map the technical architecture decisions for a modern website", "format": "mermaid flowchart"},\n'
-            '  {"step": 2, "phase": "brainstorming", "expert": "Steve Jobs", "question": "Compare website platform options by user experience factors", "format": "comparison table"}\n'
+            '  {"step": 1, "phase": "brainstorming", "expert": "Steve Wozniak", "fictional_name": "Steve Whiskernak", "role": "Technical Architect", "question": "Map the technical architecture decisions for a modern website", "format": "mermaid flowchart"},\n'
+            '  {"step": 2, "phase": "brainstorming", "expert": "Steve Jobs", "fictional_name": "Steve Paws", "role": "Design Visionary", "question": "Compare website platform options by user experience factors", "format": "comparison table"}\n'
             "]\n\n"
             
             "Example (strategic request - 'Should I quit my job to start a company?'):\n"
             '[\n'
-            '  {"step": 1, "phase": "brainstorming", "expert": "Paul Graham", "question": "What are the key decision factors for leaving employment to start a company?", "format": "decision matrix"},\n'
-            '  {"step": 2, "phase": "brainstorming", "expert": "Naval Ravikant", "question": "Map the financial runway calculation for bootstrapping", "format": "formula with examples"}\n'
+            '  {"step": 1, "phase": "brainstorming", "expert": "Paul Graham", "fictional_name": "Pawl Graham", "role": "Startup Mentor", "question": "What are the key decision factors for leaving employment to start a company?", "format": "decision matrix"},\n'
+            '  {"step": 2, "phase": "brainstorming", "expert": "Naval Ravikant", "fictional_name": "Naval Meowvikant", "role": "Wealth Philosopher", "question": "Map the financial runway calculation for bootstrapping", "format": "formula with examples"}\n'
             "]\n\n"
             
             "Example (technical request - 'How does OAuth work?'):\n"
             '[\n'
-            '  {"step": 1, "phase": "execution", "expert": "Martin Fowler", "question": "Show the OAuth 2.0 authorization flow between client, server, and provider", "format": "mermaid sequence diagram"}\n'
+            '  {"step": 1, "phase": "execution", "expert": "Martin Fowler", "fictional_name": "Meowtin Fowler\", \"role\": \"Architecture Sage\", "question": "Show the OAuth 2.0 authorization flow between client, server, and provider", "format": "mermaid sequence diagram"}\n'
             "]\n\n"
             
             "Example (creative request - 'Write a tweet about cats'):\n"
             '[\n'
-            '  {"step": 1, "phase": "execution", "expert": "Oscar Wilde", "question": "Write a witty tweet about cats", "format": "single tweet"}\n'
+            '  {"step": 1, "phase": "execution", "expert": "Oscar Wilde", "fictional_name": "Oscar Felinede\", \"role\": \"Wit Master\", "question": "Write a witty tweet about cats", "format": "single tweet"}\n'
             "]\n\n"
             
             "Return ONLY the JSON array."
@@ -385,7 +387,9 @@ class Orchestrator:
         Expected schema per item:
         - step: int (step number)
         - phase: str ("brainstorming" or "execution")
-        - expert: str (expert name)
+        - expert: str (real expert name)
+        - fictional_name: str (cat-themed fictional name)
+        - role: str (two-word role description)
         - question: str (the question for the expert)
         - format: str (expected output format)
         """
@@ -417,10 +421,10 @@ class Orchestrator:
                         print(f"[Orchestrator] Skipping non-dict plan item: {item}")
                     continue
                 
-                # Required fields: expert and question
-                if "expert" not in item or "question" not in item:
+                # Required fields: expert, fictional_name, role, and question
+                if "expert" not in item or "question" not in item or "fictional_name" not in item or "role" not in item:
                     if self.verbose:
-                        print(f"[Orchestrator] Skipping item missing expert/question: {item}")
+                        print(f"[Orchestrator] Skipping item missing required fields: {item}")
                     continue
                 
                 # Ensure step number exists (auto-assign if missing)
@@ -478,6 +482,8 @@ class Orchestrator:
         for idx, step_item in enumerate(self.current_plan):
             expert_name = step_item.get("expert", "")
             base_question = step_item.get("question", "")
+            fictional_name = step_item.get("fictional_name", expert_name)  # Fallback to real name
+            role = step_item.get("role", "Expert")  # Fallback to generic role
             
             # Two-phase fields
             step_num = step_item.get("step", idx + 1)
@@ -511,7 +517,9 @@ class Orchestrator:
                 response = await self.tool_definitions.consult_expert(
                     expert_name, 
                     enhanced_question,
-                    display_question=base_question  # Original simple question for UI
+                    display_question=base_question,  # Original simple question for UI
+                    fictional_name=fictional_name,   # From plan
+                    role=role                        # From plan
                 )
                 
                 # Extract just the response content (remove "[expert_name]: " prefix if present)
