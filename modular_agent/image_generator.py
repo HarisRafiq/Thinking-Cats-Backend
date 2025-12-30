@@ -7,11 +7,8 @@ import io
 from typing import Optional, Tuple, List
 import google.generativeai as genai
 from .config import GOOGLE_API_KEY
-import sys
 
-# Add utils directory to path for GCSUtils import
-sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "utils"))
-from gcs_utils import GCSUtils
+from .utils.gcs_utils import GCSUtils
 
 
 class ImageGenerator:

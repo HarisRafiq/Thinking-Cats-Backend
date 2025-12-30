@@ -1,16 +1,8 @@
 from modular_agent.database import DatabaseManager
 from api.session_manager import SessionManager
 import os
-import sys
 
-# Import utils
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-try:
-    from utils.gcs_utils import GCSUtils
-except ImportError:
-    # Fallback if path handling is different
-    from modular_agent.utils.gcs_utils import GCSUtils
-
+from modular_agent.utils.gcs_utils import GCSUtils
 from modular_agent.image_generator import ImageGenerator
 from modular_agent.llm import GeminiProvider
 

@@ -4,7 +4,7 @@ Verify CORS configuration on the GCS bucket.
 """
 import sys
 import os
-from utils.gcs_utils import GCSUtils
+from modular_agent.utils.gcs_utils import GCSUtils
 
 def main():
     bucket_name = os.getenv("GCS_BUCKET_NAME", "thinking-cats-images")
