@@ -35,9 +35,10 @@ class Orchestrator:
         self.tool_definitions = ToolDefinitions(self)
         
         # Plan storage for current execution
-        # Simplified schema: {"step": int, "phase": str, "expert": str, "question": str, "format": str}
+        # Schema: {"step": int, "expert": str, "fictional_name": str, "role": str, "question": str, "format": str}
         self.current_plan = []
         self.plan_executed = []  # List of expert names already executed
+        self.suggested_questions = []  # List of suggested follow-up questions from current plan
 
         # Initialize the main orchestrator agent (planner)
         # Only has ask_clarification tool - planning phase decides experts
@@ -220,12 +221,16 @@ class Orchestrator:
     async def generate_plan(self, user_input: str) -> List[Dict[str, str]]:
         """
         Generates an execution plan with a list of experts and their questions.
-        Uses a two-phase approach: brainstorming (structuring) vs execution (implementation).
+        
+        The orchestrator decomposes complex goals into key components and assigns domain experts
+        to explore each component deeply using appropriate thinking frameworks. The plan is designed
+        such that all expert responses collectively complete the task - convergence happens through
+        intelligent planning, not post-hoc synthesis.
         
         Uses current query and previous questions from all previous plans to avoid repetition.
         
         Returns:
-            List of dicts with format: {"expert": str, "question": str, "reason": str}
+            List of dicts with format: {"expert": str, "fictional_name": str, "role": str, "question": str, "format": str}
         """
         if self.verbose:
             print(f"\n[Orchestrator] Generating plan for input: {user_input}")
@@ -266,52 +271,84 @@ class Orchestrator:
         # Construct prompt for plan generation
         base_prompt = (
             f"Current User Input: {user_input}{context_section}{questions_context}\n\n"
-            "Your job is to be a THINKING PARTNER. Create a plan using two phases:\n\n"
+            "You are a meta-thinking orchestrator. Available thinking frameworks:\n"
+            "• First Principles\n"
+            "• Critical Thinking\n"
+            "• Socratic Method\n"
+            "• Parallel Thinking (Six Thinking Hats)\n"
+            "• Design Thinking\n"
+            "• Red Team/Blue Team\n"
+            "• Systems Thinking\n"
+            "• Lateral Thinking\n\n"
             
-            "PHASE: BRAINSTORMING\n"
-            "Use when the request is vague, broad, or undefined (e.g., 'I want to be rich', 'I need an app').\n"
-            "Do NOT solve it immediately. Do NOT ask the user for clarification.\n"
-            "Instead, assign experts to UNPACK and STRUCTURE the problem.\n"
-            "Ask experts for frameworks, mental models, or identifying questions.\n"
-            "  * BAD: 'User, what kind of app do you want?'\n"
-            "  * GOOD: 'What are the 5 critical questions to define a mobile app concept?'\n\n"
+            "Your task:\n"
+            "1. Decompose complex requests into KEY COMPONENTS that need deep exploration\n"
+            "2. For each component, select the best domain expert\n"
+            "3. Ask CLEAN, FOCUSED questions - let experts apply their natural approach\n"
+            "4. Internally note which framework fits (for system use), but keep questions simple\n\n"
             
-            "PHASE: EXECUTION\n"
-            "Use when the request is specific and actionable (e.g., 'Write a python CSV parser').\n"
-            "Assign experts to directly produce the requested output.\n\n"
+            "PRINCIPLES:\n"
+            "- Decompose goals into comprehensive components\n"
+            "- Select experts by domain expertise\n"
+            "- Ask clear questions without over-prescribing the approach\n"
+            "- Plan collectively completes the task\n\n"
             
-            "Return a JSON array. Each step MUST have:\n"
-            '- "step": Step number (1, 2, 3...)\n'
-            '- "phase": Either "brainstorming" or "execution"\n'
-            '- "expert": Famous personality or expert best suited for this (real name like "Steve Jobs")\n'
-            '- "fictional_name": A cat-themed playful name inspired by the expert (e.g., "Whisker Jobs", "Marie Purrie")\n'
-            '- "role": Two-word description of their expertise (e.g., "Innovation Visionary", "Physics Pioneer")\n'
-            '- "question": The specific question for the expert\n'
-            '- "format": Output format that fits the question (e.g., "mermaid flowchart", "comparison table", "sequence diagram", "decision matrix", "pros/cons table", "numbered steps", "code block")\n\n'
+            "Simple queries: 1 expert, 1 focused question\n"
+            "Complex queries: 3-5 experts, each with a focused question on their component\n"
+            "Format: Specify visual formats like 'bulleted list', 'comparison table', 'step-by-step guide', or 'short manifesto'.\n\n"
             
-            "Example (vague request - 'I need a website'):\n"
+            "Examples:\n\n"
+            
+            "Query: 'Explain quantum entanglement' [SIMPLE]\n"
             '[\n'
-            '  {"step": 1, "phase": "brainstorming", "expert": "Steve Wozniak", "fictional_name": "Steve Whiskernak", "role": "Technical Architect", "question": "Map the technical architecture decisions for a modern website", "format": "mermaid flowchart"},\n'
-            '  {"step": 2, "phase": "brainstorming", "expert": "Steve Jobs", "fictional_name": "Steve Paws", "role": "Design Visionary", "question": "Compare website platform options by user experience factors", "format": "comparison table"}\n'
+            '  {"expert": "Richard Feynman", "fictional_name": "Richard Furrman", "role": "Physics Explainer", '
+            '   "question": "What is quantum entanglement and why does it matter?", '
+            '   "format": "explanation with diagrams"}\n'
             "]\n\n"
             
-            "Example (strategic request - 'Should I quit my job to start a company?'):\n"
+            "Query: 'Create a business plan for an AI tutoring app' [COMPLEX]\n"
             '[\n'
-            '  {"step": 1, "phase": "brainstorming", "expert": "Paul Graham", "fictional_name": "Pawl Graham", "role": "Startup Mentor", "question": "What are the key decision factors for leaving employment to start a company?", "format": "decision matrix"},\n'
-            '  {"step": 2, "phase": "brainstorming", "expert": "Naval Ravikant", "fictional_name": "Naval Meowvikant", "role": "Wealth Philosopher", "question": "Map the financial runway calculation for bootstrapping", "format": "formula with examples"}\n'
+            '  {"expert": "Clayton Christensen", "fictional_name": "Clayton Whiskersten", "role": "Innovation Theorist", '
+            '   "question": "What job are students and parents really hiring an AI tutor to do?", '
+            '   "format": "market analysis with comparison table"},\n'
+            '  {"expert": "Andrew Ng", "fictional_name": "Andrew Meow", "role": "AI Educator", '
+            '   "question": "How should the AI tutoring system be designed to actually improve learning outcomes?", '
+            '   "format": "system architecture with mermaid diagram"},\n'
+            '  {"expert": "Ben Thompson", "fictional_name": "Ben Thompurr", "role": "Strategy Analyst", '
+            '   "question": "What business model would make this AI tutor defensible and profitable?", '
+            '   "format": "business model canvas with projections"},\n'
+            '  {"expert": "April Dunford", "fictional_name": "April Pawford", "role": "Positioning Expert", '
+            '   "question": "How should we position and launch this to acquire the first 1000 customers?", '
+            '   "format": "GTM plan with timeline"}\n'
             "]\n\n"
             
-            "Example (technical request - 'How does OAuth work?'):\n"
+            "Query: 'Should I quit my job to start a company?' [COMPLEX]\n"
             '[\n'
-            '  {"step": 1, "phase": "execution", "expert": "Martin Fowler", "fictional_name": "Meowtin Fowler\", \"role\": \"Architecture Sage\", "question": "Show the OAuth 2.0 authorization flow between client, server, and provider", "format": "mermaid sequence diagram"}\n'
+            '  {"expert": "Paul Graham", "fictional_name": "Pawl Graham", "role": "Startup Mentor", '
+            '   "question": "What indicates someone is ready to start a company vs should wait?", '
+            '   "format": "readiness assessment"},\n'
+            '  {"expert": "Nassim Taleb", "fictional_name": "Nassim Taileb", "role": "Risk Philosopher", '
+            '   "question": "How should someone structure this career transition to be antifragile?", '
+            '   "format": "risk analysis with scenarios"},\n'
+            '  {"expert": "Naval Ravikant", "fictional_name": "Naval Meowvikant", "role": "Wealth Philosopher", '
+            '   "question": "What\'s the financial reality of bootstrapping a startup?", '
+            '   "format": "financial breakdown with runway calculator"}\n'
             "]\n\n"
             
-            "Example (creative request - 'Write a tweet about cats'):\n"
-            '[\n'
-            '  {"step": 1, "phase": "execution", "expert": "Oscar Wilde", "fictional_name": "Oscar Felinede\", \"role\": \"Wit Master\", "question": "Write a witty tweet about cats", "format": "single tweet"}\n'
-            "]\n\n"
+            "ADDITIONAL TASK - Suggest Follow-up Questions:\n"
+            "Additionally, suggest 3 creative follow-up questions the user could ask to continue exploring:\n"
+            "- Questions that explore angles NOT covered in this plan\n"
+            "- Questions that go deeper into promising areas\n"
+            "- Questions that challenge assumptions or consider alternatives\n"
+            "- Questions that are specific, actionable, and concise (max 15 words)\n"
+            "- Avoid repeating topics already in the current plan or previous conversation\n\n"
             
-            "Return ONLY the JSON array."
+            "Return a JSON object with TWO fields:\n"
+            "{\n"
+            '  "plan": [array of expert objects as shown above],\n'
+            '  "suggested_questions": ["Question 1?", "Question 2?", "Question 3?"]\n'
+            "}\n\n"
+            "Required fields in plan items: expert, fictional_name, role, question, format"
         )
         
         # Clear agent context to avoid duplication since we provide full history in prompt
@@ -354,7 +391,7 @@ class Orchestrator:
                         f"{base_prompt}\n\n"
                         f"PREVIOUS ATTEMPT FAILED TO PROVIDE VALID JSON. "
                         f"Response was: {response[:500]}\n"
-                        f"Please ensure you return ONLY a valid JSON array of expert objects."
+                        f"Please ensure you return ONLY a valid JSON object with 'plan' and 'suggested_questions' fields."
                     )
         
         if not plan and current_retry > max_retries:
@@ -373,25 +410,28 @@ class Orchestrator:
         # Emit plan generated event
         await self._emit_event({
             "type": "plan_generated",
-            "plan": plan
+            "plan": plan,
+            "suggested_questions": self.suggested_questions
         })
         
         return plan
-
-    # Valid phases for two-phase planning
-    VALID_PHASES = {"brainstorming", "execution"}
 
     def _parse_json_plan(self, response: str) -> List[Dict[str, str]]:
         """Parses and validates the JSON plan from the model response.
         
         Expected schema per item:
-        - step: int (step number)
-        - phase: str ("brainstorming" or "execution")
+        - step: int (step number - auto-assigned if missing)
         - expert: str (real expert name)
         - fictional_name: str (cat-themed fictional name)
         - role: str (two-word role description)
         - question: str (the question for the expert)
         - format: str (expected output format)
+        
+        New format also extracts suggested_questions if present:
+        {
+          "plan": [...],
+          "suggested_questions": ["Q1?", "Q2?", ...]
+        }
         """
         plan = []
         try:
@@ -402,16 +442,41 @@ class Orchestrator:
             elif "```" in response:
                 json_str = response.split("```")[1].split("```")[0].strip()
             
-            # Clean up any potential leading/trailing non-JSON text
-            json_match = re.search(r'\[.*\]', json_str, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(0)
+            # Try to match both object and array patterns
+            # First try to match an object
+            obj_match = re.search(r'\{.*\}', json_str, re.DOTALL)
+            arr_match = re.search(r'\[.*\]', json_str, re.DOTALL)
             
-            parsed_items = json.loads(json_str)
+            # Prefer object match if it exists (new format)
+            if obj_match:
+                json_str = obj_match.group(0)
+            elif arr_match:
+                json_str = arr_match.group(0)
             
-            if not isinstance(parsed_items, list):
+            parsed_data = json.loads(json_str)
+            
+            # Handle new object format with plan and suggested_questions
+            if isinstance(parsed_data, dict):
+                if "plan" in parsed_data:
+                    parsed_items = parsed_data["plan"]
+                    # Extract suggested questions if present
+                    if "suggested_questions" in parsed_data and isinstance(parsed_data["suggested_questions"], list):
+                        self.suggested_questions = parsed_data["suggested_questions"]
+                        if self.verbose:
+                            print(f"[Orchestrator] Extracted {len(self.suggested_questions)} suggested questions")
+                    else:
+                        self.suggested_questions = []
+                else:
+                    if self.verbose:
+                        print(f"[Orchestrator] Object format but no 'plan' field found")
+                    return []
+            # Handle legacy array format
+            elif isinstance(parsed_data, list):
+                parsed_items = parsed_data
+                self.suggested_questions = []  # No questions in legacy format
+            else:
                 if self.verbose:
-                    print(f"[Orchestrator] Plan is not a list: {type(parsed_items)}")
+                    print(f"[Orchestrator] Invalid format: {type(parsed_data)}")
                 return []
 
             # Validate plan structure and add valid items
@@ -430,12 +495,6 @@ class Orchestrator:
                 # Ensure step number exists (auto-assign if missing)
                 if "step" not in item:
                     item["step"] = idx + 1
-                
-                # Validate and default phase
-                if "phase" not in item or item["phase"] not in self.VALID_PHASES:
-                    if self.verbose and "phase" in item:
-                        print(f"[Orchestrator] Invalid phase '{item.get('phase')}', defaulting to 'execution'")
-                    item["phase"] = "execution"
                 
                 # Ensure format exists
                 if "format" not in item:
@@ -484,10 +543,7 @@ class Orchestrator:
             base_question = step_item.get("question", "")
             fictional_name = step_item.get("fictional_name", expert_name)  # Fallback to real name
             role = step_item.get("role", "Expert")  # Fallback to generic role
-            
-            # Two-phase fields
             step_num = step_item.get("step", idx + 1)
-            phase = step_item.get("phase", "execution")
             output_format = step_item.get("format", "structured response")
             
             if not expert_name or not base_question:
@@ -504,13 +560,12 @@ class Orchestrator:
                     previous_context=accumulated_context
                 )
                 
-                # Emit progress event with phase context
+                # Emit progress event
                 await self._emit_event({
                     "type": "plan_step_executing",
                     "step": step_num,
                     "total": len(self.current_plan),
-                    "expert": expert_name,
-                    "phase": phase
+                    "expert": expert_name
                 })
                 
                 # Consult the expert with the enhanced prompt, but pass original question for display
@@ -530,7 +585,6 @@ class Orchestrator:
                 # Add this expert's contribution to accumulated context
                 accumulated_context.append({
                     "expert": expert_name,
-                    "phase": phase,
                     "response": response_content[:500]  # Truncate to keep context manageable
                 })
                 
@@ -542,8 +596,7 @@ class Orchestrator:
                     "type": "plan_step_completed",
                     "step": step_num,
                     "total": len(self.current_plan),
-                    "expert": expert_name,
-                    "phase": phase
+                    "expert": expert_name
                 })
                 
             except Exception as e:
@@ -554,7 +607,6 @@ class Orchestrator:
                     "type": "plan_step_error",
                     "step": step_num,
                     "expert": expert_name,
-                    "phase": phase,
                     "error": str(e)
                 })
         
@@ -567,6 +619,75 @@ class Orchestrator:
         
         return f"Executed plan with {len(self.plan_executed)}/{len(self.current_plan)} steps"
 
+    async def _update_suggested_questions(self):
+        """
+        Updates the session's suggested_questions property with accumulated questions,
+        filtering out questions that have already been asked by the user.
+        """
+        if not self.db_manager or not self.session_id:
+            return
+        
+        if not self.suggested_questions:
+            return
+        
+        try:
+            session = await self.db_manager.get_session(self.session_id)
+            if not session:
+                return
+            
+            # Get existing accumulated questions
+            accumulated = session.get("suggested_questions", [])
+            
+            # Add new questions (avoid duplicates)
+            for question in self.suggested_questions:
+                if question not in accumulated:
+                    accumulated.append(question)
+            
+            if self.verbose:
+                print(f"[Orchestrator] Accumulated {len(accumulated)} total questions")
+            
+            # Get all user messages to filter out asked questions
+            user_messages = []
+            slides = session.get("slides", [])
+            
+            for slide in slides:
+                if slide.get("type") == "user_message":
+                    if "content" in slide:
+                        user_messages.append(slide["content"].strip().lower())
+                    if "answer" in slide:
+                        user_messages.append(slide["answer"].strip().lower())
+            
+            # Filter out questions that have been asked
+            filtered_questions = []
+            for question in accumulated:
+                question_lower = question.strip().lower()
+                # Check if this question was asked (simple substring match)
+                is_asked = any(
+                    question_lower in msg or msg in question_lower
+                    for msg in user_messages
+                )
+                if not is_asked:
+                    filtered_questions.append(question)
+            
+            if self.verbose:
+                print(f"[Orchestrator] Filtered to {len(filtered_questions)} questions")
+            
+            # Update session with filtered questions
+            await self.db_manager.update_session_suggested_questions(
+                self.session_id, 
+                filtered_questions
+            )
+            
+            # Emit event with updated questions
+            await self._emit_event({
+                "type": "suggested_questions_updated",
+                "questions": filtered_questions
+            })
+            
+        except Exception as e:
+            if self.verbose:
+                print(f"[Orchestrator] Error updating suggested questions: {e}")
+
     def _build_expert_prompt(
         self,
         question: str,
@@ -575,12 +696,14 @@ class Orchestrator:
         previous_context: List[Dict[str, str]]
     ) -> str:
         """
-        Builds a structured prompt for an expert using a simple template.
+        Builds a clean prompt for an expert using a simple template.
         No LLM call - just efficient string formatting.
+        
+        Provides context and format guidance without over-prescribing the approach.
         
         Args:
             question: The question for this expert
-            output_format: Expected output format (e.g., "bullet list")
+            output_format: Expected output format (e.g., "explanation with diagrams")
             user_input: Original user request
             previous_context: List of previous expert contributions
             
@@ -592,25 +715,31 @@ class Orchestrator:
         # Section 1: Original request (brief context)
         if user_input:
             truncated_input = user_input[:300] + "..." if len(user_input) > 300 else user_input
-            parts.append(f"Request: {truncated_input}")
+            parts.append(f"Original User Request: {truncated_input}")
         
-        # Section 2: Prior insights (if any) - just key points
+        # Section 2: Prior insights (IMPROVED)
         if previous_context:
             insights = []
-            for ctx in previous_context[-4:]:  # Only last 3 experts max
+            for ctx in previous_context[-4:]:  # Only last 4 experts max
                 response = ctx.get("response", "")
-                first_sentence = response.split('.')[0][:150] if response else ""
-                if first_sentence:
-                    insights.append(f"• {ctx['expert']}: {first_sentence}")
+                # Take first 400 chars instead of just first sentence to keep more context
+                summary = response[:400].strip() + "..." if len(response) > 400 else response
+                if summary:
+                    insights.append(f"• {ctx['expert']} previously said: {summary}")
             if insights:
-                parts.append("Prior insights:\n" + "\n".join(insights))
+                parts.append("Context from previous experts:\n" + "\n".join(insights))
         
         # Section 3: The actual question
-        parts.append(f"Question: {question}")
+        parts.append(f"Your Specific Question: {question}")
         
-        # Section 4: Expected format
+        # Section 4: Expected format (IMPROVED)
+        parts.append("\nFORMATTING GUIDELINES (CRITICAL):")
+        parts.append("1. You are creating content for a PRESENTATION SLIDE.")
+        parts.append("2. Be CONCISE. Use bullet points, bold text, and short paragraphs.")
+        parts.append("3. Do not use 'I think' or 'In my opinion' filler. State your expertise directly.")
+        
         if output_format:
-            parts.append(f"Format: {output_format}")
+            parts.append(f"4. Desired Output Style: {output_format}")
         
         return "\n\n".join(parts)
 
@@ -708,6 +837,9 @@ class Orchestrator:
             })
             
             result = f"Error during execution: {str(e)}"
+        
+        # Update suggested questions after execution completes
+        await self._update_suggested_questions()
         
         # Set session to idle after execution completes (non-blocking)
         if self.db_manager and self.session_id:

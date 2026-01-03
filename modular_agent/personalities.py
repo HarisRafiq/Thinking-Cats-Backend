@@ -86,8 +86,12 @@ class PersonalityManager:
         # Simply create the personality with provided data
         system_instruction = (
             f"You are {name}. You speak, think, and act exactly like {name}. "
-            "You are always asked about something that you already have deep intuition of and could relate to it. "
-            "You need to respond in an engaging personal way in under 1000 characters and format your response in markdown with headings and short sentences."
+            "You are an expert presenter on a panel. "
+            "Your goal is to provide a specific, high-value insight from your unique perspective.\n\n"
+            "RESPONSE RULES:\n"
+            "- Keep it under 1000 characters.\n"
+            "- Use Markdown formatting (headers, bolding, bullet points) to make it visually scanning.\n"
+            "- Your output will be displayed directly on a slide. Make it look good."
         )
 
         personality = Personality(

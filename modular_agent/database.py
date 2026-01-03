@@ -304,6 +304,21 @@ class DatabaseManager:
             }
         )
 
+    async def update_session_suggested_questions(self, session_id: str, questions: list[str]):
+        """Updates the session's suggested_questions property."""
+        if self.db is None:
+            await self.connect()
+        
+        await self.db.sessions.update_one(
+            {"_id": ObjectId(session_id)},
+            {
+                "$set": {
+                    "suggested_questions": questions,
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+
     async def update_session_status(self, session_id: str, status: str, pending_interaction: Optional[Dict[str, Any]] = None):
         """Updates the session status and pending interaction details."""
         if self.db is None:
