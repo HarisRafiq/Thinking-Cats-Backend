@@ -11,7 +11,7 @@ load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from api.core_dependencies import db_manager
-from api.routers import auth, chat, sessions, admin, artifacts, social, deliverables, github
+from api.routers import auth, chat, sessions, admin, artifacts, github
 
 app = FastAPI(title="Multi-Agent Chat API")
 
@@ -33,8 +33,6 @@ app.include_router(chat.router)
 app.include_router(sessions.router)
 app.include_router(admin.router)
 app.include_router(artifacts.router)
-app.include_router(social.router)
-app.include_router(deliverables.router)
 app.include_router(github.router)
 
 
