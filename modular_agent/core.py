@@ -46,6 +46,8 @@ class ModularAgent:
         self.total_output_tokens = 0
         self.total_thinking_tokens = 0
         self.total_tokens = 0
+        # Log of last tool calls from chat()
+        self.last_tool_calls: List[Dict[str, Any]] = []
 
     def set_personality(self, personality_name: str):
         """Switches the agent's personality."""
@@ -86,6 +88,7 @@ class ModularAgent:
         max_iterations = 20  # Prevent infinite loops
         iteration = 0
         final_response_text = ""
+        tool_calls_log: List[Dict[str, Any]] = []
         
         try:
             # Build context for initial API call
@@ -145,9 +148,9 @@ class ModularAgent:
                     for fn in function_calls:
                         print(f"\n[Thinking] I need to use the tool '{fn.name}' with arguments: {dict(fn.args)}")
                 
-                # Add model message with function calls to context
-                for fn in function_calls:
-                    self.context.add_model_message("", function_call=fn)
+                # Do NOT add function_call parts back into context to avoid
+                # API errors requiring thought_signature on resend. We'll
+                # only add function responses, which reference original call IDs.
                 
                 # Execute function calls and prepare responses
                 for fn in function_calls:
@@ -167,6 +170,20 @@ class ModularAgent:
                         
                         if self.verbose:
                             print(f"[Tool Output] {fn.name}: {result}")
+                        # Record tool call
+                        try:
+                            tool_calls_log.append({
+                                "tool": fn.name,
+                                "args": dict(fn.args),
+                                "result": result[:1000] if isinstance(result, str) else str(result)[:1000]
+                            })
+                        except Exception:
+                            # Best-effort logging; don't crash if args aren't serializable
+                            tool_calls_log.append({
+                                "tool": fn.name,
+                                "args": "<unserializable>",
+                                "result": str(result)[:1000]
+                            })
                         
                         # Create function response
                         from google.generativeai import protos
@@ -211,6 +228,19 @@ class ModularAgent:
                         
                         # Add error response to context
                         self.context.add_function_response(fn_response)
+                        # Record tool error
+                        try:
+                            tool_calls_log.append({
+                                "tool": fn.name,
+                                "args": dict(fn.args),
+                                "error": str(e)
+                            })
+                        except Exception:
+                            tool_calls_log.append({
+                                "tool": fn.name,
+                                "args": "<unserializable>",
+                                "error": str(e)
+                            })
                 
                 # Build context for next iteration (includes function calls and responses we just added)
                 contents = self.context.build_api_context(include_current_user=False)
@@ -235,6 +265,9 @@ class ModularAgent:
                 if not final_response_text and response_text:
                     final_response_text = response_text
                     self.context.add_model_message(final_response_text)
+            
+            # Persist last tool calls for external consumers
+            self.last_tool_calls = tool_calls_log
             
         except Exception as e:
             # Remove the user message we added if there was an error

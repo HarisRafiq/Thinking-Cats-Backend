@@ -619,6 +619,34 @@ class DatabaseManager:
         )
         return result.modified_count > 0
 
+    async def update_user_github_settings(self, user_id: str, settings: Dict[str, Any]) -> bool:
+        """Updates user's GitHub settings (access_token, repo, branch, active_path)."""
+        if self.db is None:
+            await self.connect()
+        
+        # We store github settings in a nested object
+        update_data = {}
+        for key, value in settings.items():
+            update_data[f"github_settings.{key}"] = value
+        
+        update_data["updated_at"] = datetime.utcnow()
+        
+        result = await self.db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": update_data}
+        )
+        return result.modified_count > 0
+
+    async def get_user_github_settings(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves user's GitHub settings."""
+        if self.db is None:
+            await self.connect()
+        
+        user = await self.get_user_by_id(user_id)
+        if user:
+            return user.get("github_settings")
+        return None
+
     async def get_cached_personality(self, expert_name: str) -> Optional[Dict[str, Any]]:
         """Retrieves a cached personality by expert name."""
         if self.db is None:

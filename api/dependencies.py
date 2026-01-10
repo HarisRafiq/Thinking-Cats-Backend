@@ -9,13 +9,29 @@ from api.core_dependencies import get_db_manager
 # Admin token/key for admin endpoints (set via ADMIN_TOKEN env var)
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "admin-token-placeholder")
 
-async def get_current_user(token: str = Depends(oauth2_scheme), db_manager = Depends(get_db_manager)) -> Dict[str, Any]:
-    """Dependency to get the current authenticated user."""
+async def get_current_user(
+    request: Request,
+    db_manager = Depends(get_db_manager)
+) -> Dict[str, Any]:
+    """Dependency to get the current authenticated user from header or cookie."""
+    # 1. Try to get token from Authorization header
+    token = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+    
+    # 2. Try to get token from cookie if header is missing
+    if not token:
+        token = request.cookies.get("token")
+        
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    
+    if not token:
+        raise credentials_exception
     
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])

@@ -2,6 +2,7 @@ from typing import List, TYPE_CHECKING
 import asyncio
 from ..core import ModularAgent, AgentInterruption
 from ..utils.sanitization import sanitize_response
+from .web_tools import web_search, web_page_reader
 
 if TYPE_CHECKING:
     from ..orchestrator import Orchestrator
@@ -87,7 +88,7 @@ class ToolDefinitions:
                 "role": role_value
             })
 
-            # Send the self-contained question directly to the expert
+            # Send the self-contained question directly to the expert using run()
             response, usage = await agent.run(question)
             self.orchestrator._log_usage_background(usage, model=self.orchestrator.model_name, prompt=question, response=response)
             
@@ -152,6 +153,214 @@ class ToolDefinitions:
             return f"[{expert_name}]: {response}"
         except Exception as e:
             error_msg = f"Error consulting {expert_name}: {str(e)}"
+            await self.orchestrator._emit_event({
+                "type": "error",
+                "expert": expert_name,
+                "message": error_msg
+            })
+            return error_msg
+
+    async def consult_research_agent(self, expert_name: str, question: str, display_question: str = None, fictional_name: str = None, role: str = None) -> str:
+        """
+        Consults an expert with WEB SEARCH capabilities for research and information gathering.
+        This is used during the "inputs" phase to gather facts, risks, opportunities, and market signals.
+        
+        The agent has access to:
+        - web_search: Search the internet using DuckDuckGo
+        - web_page_reader: Read and extract content from web pages
+        
+        Args:
+            expert_name: The name of the famous person or expert to consult.
+            question: A self-contained research question with context.
+            display_question: Optional simple question for UI display.
+            fictional_name: Cat-themed fictional name from plan.
+            role: Two-word role description from plan.
+            
+        Returns:
+            The expert's research findings and analysis.
+        """
+        if self.orchestrator.verbose:
+            print(f"\n[Orchestrator] Consulting research agent {expert_name} with web tools...")
+        
+        # Use provided fictional_name and role or fallback
+        if fictional_name is None:
+            fictional_name = expert_name
+        if role is None:
+            role = "Research Expert"
+        
+        try:
+            # Check if it's a standard personality, otherwise create a dynamic one
+            if expert_name.lower() in self.orchestrator.personality_manager.personalities:
+                personality = self.orchestrator.personality_manager.get_personality(expert_name.lower())
+                role_value = personality.role or role
+                fictional_name = personality.fictional_name or fictional_name
+            else:
+                # Dynamic personality - use provided fictional_name and role from plan
+                personality, usage = await self.orchestrator.personality_manager.create_dynamic_personality(
+                    expert_name, 
+                    fictional_name=fictional_name,
+                    role=role
+                )
+                
+                if usage['total_tokens'] > 0:
+                    self.orchestrator._log_usage_background(usage, model=self.orchestrator.model_name, prompt=f"Dynamic personality generation for {expert_name}", response=f"Role: {personality.role}")
+                
+                role_value = personality.role or role
+                fictional_name = personality.fictional_name or fictional_name
+            
+            # Create research agent with web tools (just pass the function objects)
+            web_tools = [web_search, web_page_reader]
+            
+            # Create research agent with web tools
+            agent = ModularAgent(
+                provider=self.orchestrator.provider, 
+                personality='default',
+                tools=web_tools,
+                verbose=False
+            )
+            agent.current_personality = personality
+            
+            # Store mapping for global sanitization
+            self.orchestrator.active_experts[expert_name] = fictional_name
+            
+            # Use display_question for UI
+            ui_question = display_question or question
+            
+            # Sanitize the UI question for the event
+            sanitized_question = sanitize_response(ui_question, self.orchestrator.active_experts, expert_name, fictional_name)
+            
+            # Store sanitized question for later use in slide creation
+            self.orchestrator.pending_questions[fictional_name] = sanitized_question
+            
+            # Send consult_start event
+            await self.orchestrator._emit_event({
+                "type": "consult_start",
+                "expert": expert_name,
+                "fictional_name": fictional_name,
+                "question": sanitized_question,
+                "role": role_value,
+                "has_web_tools": True  # Flag to indicate this agent has research capabilities
+            })
+
+            # Enhanced research instruction
+            research_prompt = f"""{question}
+
+RESEARCH INSTRUCTIONS (TOOLS REQUIRED):
+- You MUST call web_search first to gather recent, factual information.
+- You MUST call web_page_reader on at least the top 1-2 promising URLs from search results.
+- Do NOT fabricate links. Only cite URLs you actually read via web_page_reader.
+- If a tool fails, try an alternative query once; if still failing, state what failed.
+
+PROCESS:
+1) Call web_search with 2-4 targeted queries.
+2) Pick the best URLs and call web_page_reader to extract details.
+3) Summarize findings with evidence; list URLs consulted.
+4) If no useful sources found, explicitly say "No reliable sources found".
+
+OUTPUT REQUIREMENTS:
+- Provide a concise summary of findings.
+- Include a bullet list of URLs actually read.
+- Keep it factual; avoid speculation."""
+
+            # Run the research agent via chat() to capture tool calls
+            response, usage = await agent.chat(research_prompt)
+            tool_calls = agent.last_tool_calls
+            self.orchestrator._log_usage_background(usage, model=self.orchestrator.model_name, prompt=research_prompt, response=response)
+            
+            if self.orchestrator.verbose:
+                print(f"[{expert_name}] Research completed: {response[:100]}..." if len(response) > 100 else f"[{expert_name}] {response}")
+                if tool_calls:
+                    print(f"[{expert_name}] Used {len(tool_calls)} tool calls")
+            
+            # Sanitize response before sending to frontend
+            sanitized_response = sanitize_response(response, self.orchestrator.active_experts, expert_name, fictional_name)
+            
+            await self.orchestrator._emit_event({
+                "type": "consult_end",
+                "expert": expert_name,
+                "fictional_name": fictional_name,
+                "response": sanitized_response,
+                "role": role_value
+            })
+            
+            # Create agent_response slide
+            if self.orchestrator.db_manager and self.orchestrator.session_id:
+                import uuid
+                temp_id = str(uuid.uuid4())
+                
+                # Extract search queries and URLs from tool calls (sanitize to plain lists)
+                def _to_plain_list(x):
+                    try:
+                        return [str(i) for i in list(x)]
+                    except Exception:
+                        return [str(x)]
+
+                searches = []
+                urls = []
+                safe_tool_calls = []
+                for tool_call in tool_calls or []:
+                    tool_name = tool_call.get("tool")
+                    args = tool_call.get("args", {})
+                    result = tool_call.get("result") or tool_call.get("error") or ""
+                    safe_entry = {"tool": str(tool_name), "result": str(result)[:1000]}
+
+                    if tool_name == "web_search":
+                        raw_queries = args.get("queries", [])
+                        plain_queries = _to_plain_list(raw_queries)
+                        searches.extend(plain_queries)
+                        safe_entry["args"] = {"queries": plain_queries}
+                    elif tool_name == "web_page_reader":
+                        raw_urls = args.get("urls", [])
+                        plain_urls = _to_plain_list(raw_urls)
+                        urls.extend(plain_urls)
+                        safe_entry["args"] = {"urls": plain_urls}
+                    else:
+                        # For other tools, store a stringified args summary
+                        try:
+                            safe_entry["args"] = {k: str(v) for k, v in args.items()}
+                        except Exception:
+                            safe_entry["args"] = {"_": "<unserializable>"}
+
+                    safe_tool_calls.append(safe_entry)
+                
+                slide = {
+                    "type": "agent_response",
+                    "sender": fictional_name,
+                    "content": sanitized_response,
+                    "question": self.orchestrator.pending_questions.get(fictional_name, ""),
+                    "role": role_value,
+                    "id": temp_id,
+                    "has_web_tools": True,  # Mark that this was a research agent
+                    "web_searches": list(searches),  # Ensure plain list of strings
+                    "web_urls": list(urls),  # Ensure plain list of strings
+                    "tool_calls": safe_tool_calls  # Sanitized tool call log
+                }
+                
+                async def _create_slide_background():
+                    try:
+                        slide_id = await self.orchestrator.db_manager.add_slide(self.orchestrator.session_id, slide)
+                        if slide_id != temp_id:
+                            slide["id"] = slide_id
+                    except Exception as e:
+                        if self.orchestrator.verbose:
+                            print(f"[Orchestrator] Error creating slide in DB: {e}")
+                
+                asyncio.create_task(_create_slide_background())
+                
+                await self.orchestrator._emit_event({
+                    "type": "slide_added",
+                    "slide": slide
+                })
+            
+            # Emit thinking event as we return to orchestrator
+            await self.orchestrator._emit_event({
+                "type": "orchestrator_thinking",
+                "label": "Thinking Cats are planning..."
+            })
+
+            return f"[{expert_name}]: {response}"
+        except Exception as e:
+            error_msg = f"Error consulting research agent {expert_name}: {str(e)}"
             await self.orchestrator._emit_event({
                 "type": "error",
                 "expert": expert_name,

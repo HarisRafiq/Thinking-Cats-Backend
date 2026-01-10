@@ -1,7 +1,7 @@
 import os
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from google.oauth2 import id_token
 from google.auth.transport import requests
@@ -65,17 +65,21 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-async def get_current_user(token: str = Depends(oauth2_scheme), db_manager: DatabaseManager = Depends(DatabaseManager)) -> Dict[str, Any]:
-    """Dependency to get the current authenticated user."""
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail={
-            "message": "Could not validate credentials",
-            "code": "INVALID_CREDENTIALS"
-        },
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+async def get_current_user(
+    request: Request,
+    db_manager: DatabaseManager = Depends(DatabaseManager)
+) -> Dict[str, Any]:
+    """Dependency to get the current authenticated user from header or cookie."""
+    # 1. Try to get token from Authorization header
+    token = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
     
+    # 2. Try to get token from cookie if header is missing
+    if not token:
+        token = request.cookies.get("token")
+
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -8,7 +8,6 @@ from .personalities import PersonalityManager
 from .llm import GeminiProvider
 from .database import DatabaseManager
 from .tools.definitions import ToolDefinitions
-from .utils.sanitization import sanitize_response
 
 class Orchestrator:
     def __init__(self, model_name: str, verbose: bool = True, event_callback: Optional[Callable[[Dict], None]] = None, theme: str = "cat", session_id: Optional[str] = None, user_id: Optional[str] = None, db_manager: Optional[DatabaseManager] = None):
@@ -266,50 +265,52 @@ class Orchestrator:
         # Construct prompt for plan generation
         base_prompt = (
             f"Current User Input: {user_input}{context_section}{questions_context}\n\n"
-            "Your job is to be a THINKING PARTNER. Create a plan using two phases:\n\n"
+            "Your job is to be a RADICAL THINKING PARTNER. Standard LLMs regress to the mean; your goal is to harness 'hallucinations' as creative fuel.\n"
+            "To fight average ideas, you must aggressively explore the edges of the problem space.\n\n"
             
-            "PHASE: BRAINSTORMING\n"
-            "Use when the request is vague, broad, or undefined (e.g., 'I want to be rich', 'I need an app').\n"
-            "Do NOT solve it immediately. Do NOT ask the user for clarification.\n"
-            "Instead, assign experts to UNPACK and STRUCTURE the problem.\n"
-            "Ask experts for frameworks, mental models, or identifying questions.\n"
-            "  * BAD: 'User, what kind of app do you want?'\n"
-            "  * GOOD: 'What are the 5 critical questions to define a mobile app concept?'\n\n"
+            "PHASE: INPUTS (Layer 1 - Ground Truth)\n"
+            "Gather foundational information: facts, risks, opportunities, constraints, market signals.\n"
+            "CRITICAL: Agents in this phase have WEB SEARCH capabilities.\n"
+            "Use when you need real-time information, market data, or external facts.\n"
+            "  * Example: 'Research current AI startup funding trends'\n\n"
             
-            "PHASE: EXECUTION\n"
-            "Use when the request is specific and actionable (e.g., 'Write a python CSV parser').\n"
-            "Assign experts to directly produce the requested output.\n\n"
+            "PHASE: JUDGMENT (Layer 2 - Wisdom & Patterns)\n"
+            "Apply deep human wisdom: instincts, experience, and historical patterns.\n"
+            "Consult experts who satisfy the 'gut check' and identify non-logical factors.\n"
+            "Use for strategic insights that require human experience.\n"
+            "  * Example: 'What intuitive red flags suggest this business model won't work?'\n\n"
+            
+            "PHASE: FILTERS (Layer 3 - Ethics & Time)\n"
+            "Apply decision filters: principles/values, time horizon, reversibility, second-order effects.\n"
+            "Ask experts to evaluate through philosophical and temporal lenses.\n"
+            "  * Example: 'How does this align with sustainable business principles over 10 years?'\n\n"
+            
+            "PHASE: REALITY_CHECK (Layer 4 - Feasibility)\n"
+            "Validate against reality: incentives, power dynamics, execution capacity.\n"
+            "Bring in practical experts ('The Cynic') who assess political and operational feasibility.\n"
+            "  * Example: 'Who has incentives to block this, and how do we navigate them?'\n\n"
+     
+            "PHASE: DIVERGENCE (Final Layer - Harnessing Hallucinations)\n"
+            "Generate wild, impossible, or non-obvious angles. Use 'hallucinations' as feature, not bug.\n"
+            "Select experts who are dreamers, sci-fi authors, or contrarians.\n"
+            "Use to break mental models and explore 'what if' scenarios.\n"
+            "  * Example: 'How would a civilization with infinite energy solve this?'\n"
+            "  * Example: 'Propose a solution that seems illegal but isn't.'\n\n"
             
             "Return a JSON array. Each step MUST have:\n"
             '- "step": Step number (1, 2, 3...)\n'
-            '- "phase": Either "brainstorming" or "execution"\n'
-            '- "expert": Famous personality or expert best suited for this (real name like "Steve Jobs")\n'
-            '- "fictional_name": A cat-themed playful name inspired by the expert (e.g., "Whisker Jobs", "Marie Purrie")\n'
-            '- "role": Two-word description of their expertise (e.g., "Innovation Visionary", "Physics Pioneer")\n'
-            '- "question": The specific question for the expert\n'
-            '- "format": Output format that fits the question (e.g., "mermaid flowchart", "comparison table", "sequence diagram", "decision matrix", "pros/cons table", "numbered steps", "code block")\n\n'
+            '- "phase": One of: "inputs", "divergence", "judgment", "filters", "reality_check", "synthesis"\n'
+            '- "expert": Famous personality or expert best suited (real name like "Steve Jobs")\n'
+            '- "fictional_name": Cat-themed playful name (e.g., "Steve Meows")\n'
+            '- "role": Two-word expertise description\n'
+            '- "question": Specific question or research objective\n'
+            '- "format": Output format\n\n'
             
-            "Example (vague request - 'I need a website'):\n"
-            '[\n'
-            '  {"step": 1, "phase": "brainstorming", "expert": "Steve Wozniak", "fictional_name": "Steve Whiskernak", "role": "Technical Architect", "question": "Map the technical architecture decisions for a modern website", "format": "mermaid flowchart"},\n'
-            '  {"step": 2, "phase": "brainstorming", "expert": "Steve Jobs", "fictional_name": "Steve Paws", "role": "Design Visionary", "question": "Compare website platform options by user experience factors", "format": "comparison table"}\n'
-            "]\n\n"
-            
-            "Example (strategic request - 'Should I quit my job to start a company?'):\n"
-            '[\n'
-            '  {"step": 1, "phase": "brainstorming", "expert": "Paul Graham", "fictional_name": "Pawl Graham", "role": "Startup Mentor", "question": "What are the key decision factors for leaving employment to start a company?", "format": "decision matrix"},\n'
-            '  {"step": 2, "phase": "brainstorming", "expert": "Naval Ravikant", "fictional_name": "Naval Meowvikant", "role": "Wealth Philosopher", "question": "Map the financial runway calculation for bootstrapping", "format": "formula with examples"}\n'
-            "]\n\n"
-            
-            "Example (technical request - 'How does OAuth work?'):\n"
-            '[\n'
-            '  {"step": 1, "phase": "execution", "expert": "Martin Fowler", "fictional_name": "Meowtin Fowler\", \"role\": \"Architecture Sage\", "question": "Show the OAuth 2.0 authorization flow between client, server, and provider", "format": "mermaid sequence diagram"}\n'
-            "]\n\n"
-            
-            "Example (creative request - 'Write a tweet about cats'):\n"
-            '[\n'
-            '  {"step": 1, "phase": "execution", "expert": "Oscar Wilde", "fictional_name": "Oscar Felinede\", \"role\": \"Wit Master\", "question": "Write a witty tweet about cats", "format": "single tweet"}\n'
-            "]\n\n"
+            "IMPORTANT RULES:\n"
+            "- Fight the urge to be boring. Choose experts with STRONG personalities.\n"
+            "- Use 'divergence' to add spice and novelty to the plan.\n"
+            "- Always start with 'inputs' if the user asks about current events.\n"
+            "- Don't use all phases if not needed - be efficient.\n\n"
             
             "Return ONLY the JSON array."
         )
@@ -378,8 +379,8 @@ class Orchestrator:
         
         return plan
 
-    # Valid phases for two-phase planning
-    VALID_PHASES = {"brainstorming", "execution"}
+    # Valid phases for multi-layer decision framework
+    VALID_PHASES = {"inputs", "divergence", "judgment", "filters", "reality_check", "synthesis"}
 
     def _parse_json_plan(self, response: str) -> List[Dict[str, str]]:
         """Parses and validates the JSON plan from the model response.
@@ -513,14 +514,24 @@ class Orchestrator:
                     "phase": phase
                 })
                 
-                # Consult the expert with the enhanced prompt, but pass original question for display
-                response = await self.tool_definitions.consult_expert(
-                    expert_name, 
-                    enhanced_question,
-                    display_question=base_question,  # Original simple question for UI
-                    fictional_name=fictional_name,   # From plan
-                    role=role                        # From plan
-                )
+                # Use research agent for inputs phase, regular expert for others
+                if phase == "inputs":
+                    response = await self.tool_definitions.consult_research_agent(
+                        expert_name, 
+                        enhanced_question,
+                        display_question=base_question,
+                        fictional_name=fictional_name,
+                        role=role
+                    )
+                else:
+                    # Consult the expert with the enhanced prompt, but pass original question for display
+                    response = await self.tool_definitions.consult_expert(
+                        expert_name, 
+                        enhanced_question,
+                        display_question=base_question,  # Original simple question for UI
+                        fictional_name=fictional_name,   # From plan
+                        role=role                        # From plan
+                    )
                 
                 # Extract just the response content (remove "[expert_name]: " prefix if present)
                 response_content = response
@@ -762,190 +773,4 @@ class Orchestrator:
             if self.verbose:
                 print(f"[Orchestrator] Error getting conversation context: {e}")
             return ""
-
-    async def generate_social_content_plan(self, session_id: str, instruction: str = None) -> List[Dict[str, str]]:
-        """
-        Generates a plan for social media content based on the session history.
-        Returns a list of 6 items, each with a caption and visual description.
-        If instruction is provided, uses it to refine the style/content.
-        """
-        if self.verbose:
-            print(f"[Orchestrator] Generating social content plan for session {session_id} (Instruction: {instruction})")
-            
-        # Get conversation context
-        # We need to temporarily set session_id if it's different (though typically Orchestrator is per request)
-        # For now, assume self.session_id is already set or we use the passed one
-        original_session_id = self.session_id
-        self.session_id = session_id
-        
-        context = await self._get_conversation_context(limit=50)
-        self.session_id = original_session_id # Restore
-        
-        if not context:
-            if self.verbose:
-                print("[Orchestrator] No context found for social plan")
-            return []
-
-    async def generate_social_post(
-        self,
-        platform: str,
-        caption: str,
-        visual_description: str
-    ) -> str:
-        """
-        Generates a platform-specific social media post using the provided caption and
-        visual description as creative context.
-
-        Args:
-            platform: Target platform (e.g., "twitter", "x", "instagram", "linkedin", "facebook").
-            caption: Short punchy caption or headline to inspire the post.
-            visual_description: Brief description of the accompanying visual.
-
-        Returns:
-            Post text tailored for the requested platform.
-        """
-        try:
-            platform_key = (platform or "").strip().lower()
-            if platform_key == "x":
-                platform_key = "twitter"
-
-            # Platform-specific guidance
-            guidance_map = {
-                "twitter": (
-                    "Write a single tweet (max 280 chars). Keep it crisp,"
-                    " witty, and high-signal. Optional 1-2 short hashtags."
-                    " Avoid excessive emojis or links. Output ONLY the tweet."
-                ),
-                "instagram": (
-                    "Write an Instagram caption in 1-2 short lines."
-                    " Add 4-8 relevant lowercase hashtags at the end."
-                    " Keep it aesthetic, concise, and friendly."
-                    " Output ONLY the caption body."
-                ),
-                "linkedin": (
-                    "Write a concise LinkedIn post (2-4 sentences)."
-                    " Professional tone, actionable insight."
-                    " Optionally include 1-2 tasteful hashtags."
-                    " Output ONLY the post text."
-                ),
-                "facebook": (
-                    "Write a friendly Facebook post (1-2 sentences)."
-                    " Conversational, approachable."
-                    " Avoid overusing hashtags or emojis."
-                    " Output ONLY the post text."
-                ),
-            }
-
-            guidance = guidance_map.get(platform_key, (
-                "Write a concise social post (1-2 sentences)."
-                " Tailor tone to a general audience."
-                " Output ONLY the post text."
-            ))
-
-            system_instruction = (
-                "You are an expert social media copywriter."
-                " Craft platform-appropriate, safe, and non-harmful content."
-                " Do not include disclaimers, prefaces, or metadata."
-                " Avoid offensive or unsafe content."
-            )
-
-            prompt = (
-                f"Platform: {platform_key}\n"
-                f"Caption: {caption.strip()}\n"
-                f"Visual: {visual_description.strip()}\n\n"
-                f"Instructions: {guidance}\n"
-            )
-
-            # Use lightweight provider optimized for short copy
-            response = await self._one_liner_provider.generate_content_async(
-                prompt=prompt,
-                system_instruction=system_instruction
-            )
-
-            text = response.text if getattr(response, "text", None) else ""
-            usage = self._one_liner_provider.get_token_usage(response)
-            # Log usage in background
-            self._log_usage_background(
-                usage,
-                model=self._one_liner_provider.model_name,
-                prompt=prompt,
-                response=text
-            )
-
-            # Minimal post-processing
-            cleaned = (text or "").strip()
-
-            # Enforce Twitter length limit defensively
-            if platform_key == "twitter" and len(cleaned) > 280:
-                # Trim to last full word under limit
-                trimmed = cleaned[:280]
-                last_space = trimmed.rfind(" ")
-                if last_space > 0:
-                    cleaned = trimmed[:last_space].strip()
-                else:
-                    cleaned = trimmed.strip()
-
-            return cleaned
-
-        except Exception as e:
-            if self.verbose:
-                print(f"[Orchestrator] Error generating social post: {e}")
-            # Surface a simple error string upward; router will handle HTTPException
-            raise
-            
-        instruction_text = ""
-        if instruction:
-            instruction_text = (
-                f"\n\nUSER REFINEMENT INSTRUCTION:\n"
-                f"The user wants to refine the previous output with this instruction: \"{instruction}\"\n"
-                f"Ensure the captions and visual descriptions adhere strictly to this request."
-            )
-
-        prompt = (
-            f"Analyze the following conversation and extract 6 key insights, quotes, or transformative ideas.\n"
-            f"For EACH insight, create a 'Social Card'.\n\n"
-            f"Conversation History:\n{context}\n"
-            f"{instruction_text}\n"
-            f"Task:\n"
-            f"1. Identify 6 distinct, high-impact concepts discussed.\n"
-            f"2. For each, write a short, punchy, viral-style CAPTION (max 10 words).\n"
-            f"3. For each, write a detailed VISUAL DESCRIPTION for an AI image generator. "
-            f"The visual should be abstract, high-quality, 3D render style, or minimalistic digital art. "
-            f"Avoid text in the image. Focus on metaphors, lighting, and composition.\n\n"
-            f"Return ONLY a JSON array of 6 objects:\n"
-            '[\n'
-            '  {"caption": "Start small.", "visual_description": "A single glowing ember in a dark void, cinematic lighting"},\n'
-            '  {"caption": "Think big.", "visual_description": "A vast nebula expanding into the cosmos, 8k resolution"}\n'
-            ']'
-        )
-        
-        try:
-            # unique usage tracking for this? keeping it simple for now
-            response, _ = await self.agent.chat(prompt)
-            
-            # Parse JSON
-            json_str = response
-            if "```json" in response:
-                json_str = response.split("```json")[1].split("```")[0].strip()
-            elif "```" in response:
-                json_str = response.split("```")[1].split("```")[0].strip()
-                
-            json_match = re.search(r'\[.*\]', json_str, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(0)
-                
-            plan = json.loads(json_str)
-            
-            # Validation
-            if isinstance(plan, list) and len(plan) > 0:
-                # Ensure we have exactly 6 or trim/pad?
-                # The prompt asks for 6. Let's return what we got, but capped at 6 for grid logic safety later
-                return plan[:6]
-                
-            return []
-            
-        except Exception as e:
-            if self.verbose:
-                print(f"[Orchestrator] Error generating social plan: {e}")
-            return []
-
+ 

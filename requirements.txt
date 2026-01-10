@@ -13,3 +13,4 @@ requests
 motor
 rapidfuzz
 markdown
+httpx
