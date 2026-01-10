@@ -16,8 +16,5 @@ markdown
 httpx
 ddgs
 beautifulsoup4
-opencv-python
-Pillow
 aiohttp
 sseclient-py
-numpy
