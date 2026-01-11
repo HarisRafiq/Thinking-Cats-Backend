@@ -236,6 +236,12 @@ class Orchestrator:
             "label": "Thinking Cats are planning..."
         })
         
+        # Emit planning in progress event before the slow LLM call
+        await self._emit_event({
+            "type": "planning_in_progress",
+            "message": "Selecting experts"
+        })
+        
         # Fetch conversation history for context (exclude last message if it's the current input)
         conversation_history = await self._get_conversation_context(limit=20)
         

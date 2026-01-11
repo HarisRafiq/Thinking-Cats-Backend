@@ -262,10 +262,31 @@ OUTPUT REQUIREMENTS:
 - Include a bullet list of URLs actually read.
 - Keep it factual; avoid speculation."""
 
+            # Emit tool execution start event
+            await self.orchestrator._emit_event({
+                "type": "tool_execution_started",
+                "expert": fictional_name,
+                "message": "Researching"
+            })
+            
             # Run the research agent via chat() to capture tool calls
             response, usage = await agent.chat(research_prompt)
             tool_calls = agent.last_tool_calls
             self.orchestrator._log_usage_background(usage, model=self.orchestrator.model_name, prompt=research_prompt, response=response)
+            
+            # Emit tool execution progress events for major tool usage
+            if tool_calls:
+                # Count tool types
+                search_count = sum(1 for t in tool_calls if t.get('tool') == 'web_search')
+                reader_count = sum(1 for t in tool_calls if t.get('tool') == 'web_page_reader')
+                
+                if search_count > 0 or reader_count > 0:
+                    await self.orchestrator._emit_event({
+                        "type": "tool_execution_completed",
+                        "expert": fictional_name,
+                        "message": "Synthesizing",
+                        "tool_count": len(tool_calls)
+                    })
             
             if self.orchestrator.verbose:
                 print(f"[{expert_name}] Research completed: {response[:100]}..." if len(response) > 100 else f"[{expert_name}] {response}")
@@ -355,7 +376,7 @@ OUTPUT REQUIREMENTS:
             # Emit thinking event as we return to orchestrator
             await self.orchestrator._emit_event({
                 "type": "orchestrator_thinking",
-                "label": "Thinking Cats are planning..."
+                "label": "Planning"
             })
 
             return f"[{expert_name}]: {response}"
