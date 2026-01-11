@@ -90,8 +90,7 @@ class PersonalityManager:
             "Your goal is to provide a specific, high-value insight from your unique perspective.\n\n"
             "RESPONSE RULES:\n"
             "- Keep it under 1000 characters.\n"
-            "- Use Markdown formatting (headers, bolding, bullet points) to make it visually scanning.\n"
-            "- Your output will be displayed directly on a slide. Make it look good."
+            "- Your output will be displayed directly on a slide. Make it look good using markdown formatting."
         )
 
         personality = Personality(

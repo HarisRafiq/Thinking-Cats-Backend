@@ -245,9 +245,9 @@ class ToolDefinitions:
             # Enhanced research instruction
             research_prompt = f"""{question}
 
-RESEARCH INSTRUCTIONS (TOOLS REQUIRED):
-- You MUST call web_search first to gather recent, factual information.
-- You MUST call web_page_reader on at least the top 1-2 promising URLs from search results.
+RESEARCH INSTRUCTIONS (TOOLS Available):
+- web_search first to gather recent, factual information.
+- web_page_reader on at least the top 2-4 promising URLs from search results.
 - Do NOT fabricate links. Only cite URLs you actually read via web_page_reader.
 - If a tool fails, try an alternative query once; if still failing, state what failed.
 

@@ -3,6 +3,7 @@ import google.generativeai as genai
 import asyncio
 import json
 import re
+import datetime
 from .core import ModularAgent
 from .personalities import PersonalityManager
 from .llm import GeminiProvider
@@ -262,10 +263,15 @@ class Orchestrator:
             questions_text = "\n".join(f"- {q}" for q in previous_questions[-50:])  # Last 50 questions
             questions_context = f"\n\nQuestions already covered in previous plans (do not repeat unless new angle):\n{questions_text}\n"
         
+        # Get current date for the prompt
+        current_date = datetime.datetime.now().strftime("%B %d, %Y")
+        
         # Construct prompt for plan generation
         base_prompt = (
             f"Current User Input: {user_input}{context_section}{questions_context}\n\n"
-            "Your job is to be a RADICAL THINKING PARTNER. Standard LLMs regress to the mean; your goal is to harness 'hallucinations' as creative fuel.\n"
+            f"Current Date: {current_date}\n\n"
+            "You are a master planner orchestrating a team of famous experts to tackle complex problems. "
+            "Your job is to be a RADICAL THINKING PARTNER.\n"
             "To fight average ideas, you must aggressively explore the edges of the problem space.\n\n"
             
             "PHASE: INPUTS (Layer 1 - Ground Truth)\n"
@@ -276,27 +282,22 @@ class Orchestrator:
             
             "PHASE: JUDGMENT (Layer 2 - Wisdom & Patterns)\n"
             "Apply deep human wisdom: instincts, experience, and historical patterns.\n"
-            "Consult experts who satisfy the 'gut check' and identify non-logical factors.\n"
-            "Use for strategic insights that require human experience.\n"
             "  * Example: 'What intuitive red flags suggest this business model won't work?'\n\n"
             
             "PHASE: FILTERS (Layer 3 - Ethics & Time)\n"
             "Apply decision filters: principles/values, time horizon, reversibility, second-order effects.\n"
-            "Ask experts to evaluate through philosophical and temporal lenses.\n"
             "  * Example: 'How does this align with sustainable business principles over 10 years?'\n\n"
             
             "PHASE: REALITY_CHECK (Layer 4 - Feasibility)\n"
             "Validate against reality: incentives, power dynamics, execution capacity.\n"
-            "Bring in practical experts ('The Cynic') who assess political and operational feasibility.\n"
             "  * Example: 'Who has incentives to block this, and how do we navigate them?'\n\n"
      
-            "PHASE: DIVERGENCE (Final Layer - Harnessing Hallucinations)\n"
-            "Generate wild, impossible, or non-obvious angles. Use 'hallucinations' as feature, not bug.\n"
-            "Select experts who are dreamers, sci-fi authors, or contrarians.\n"
+            "PHASE: DIVERGENCE (Final Layer - Creativity)\n"
             "Use to break mental models and explore 'what if' scenarios.\n"
             "  * Example: 'How would a civilization with infinite energy solve this?'\n"
             "  * Example: 'Propose a solution that seems illegal but isn't.'\n\n"
-            
+        
+
             "Return a JSON array. Each step MUST have:\n"
             '- "step": Step number (1, 2, 3...)\n'
             '- "phase": One of: "inputs", "divergence", "judgment", "filters", "reality_check", "synthesis"\n'
@@ -304,12 +305,10 @@ class Orchestrator:
             '- "fictional_name": Cat-themed playful name (e.g., "Steve Meows")\n'
             '- "role": Two-word expertise description\n'
             '- "question": Specific question or research objective\n'
-            '- "format": Output format\n\n'
+            '- "format": Output format that fits the question (e.g., "mermaid flowchart", "comparison table", "sequence diagram", "decision matrix", "pros/cons table", "numbered steps", "code block")\n\n'
             
             "IMPORTANT RULES:\n"
-            "- Fight the urge to be boring. Choose experts with STRONG personalities.\n"
-            "- Use 'divergence' to add spice and novelty to the plan.\n"
-            "- Always start with 'inputs' if the user asks about current events.\n"
+            "- Choose domain experts with unique perspectives on the topic.\n"
             "- Don't use all phases if not needed - be efficient.\n\n"
             
             "Return ONLY the JSON array."
