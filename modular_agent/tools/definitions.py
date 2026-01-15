@@ -316,8 +316,32 @@ OUTPUT REQUIREMENTS:
                     except Exception:
                         return [str(x)]
 
+                def _parse_search_results(result_text: str, query: str):
+                    """
+                    Parse web_search result text to extract structured data.
+                    Format: "1. Title: Body snippet (URL: https://example.com)"
+                    Returns list of {title, url, snippet, query}
+                    """
+                    import re
+                    results = []
+                    # Match pattern: "1. Title: Body (URL: url)"
+                    pattern = r'\d+\.\s*([^:]+):\s*(.+?)\s*\(URL:\s*([^\)]+)\)'
+                    matches = re.finditer(pattern, result_text)
+                    for match in matches:
+                        title = match.group(1).strip()
+                        snippet = match.group(2).strip()
+                        url = match.group(3).strip()
+                        results.append({
+                            "title": title,
+                            "url": url,
+                            "snippet": snippet,
+                            "query": query
+                        })
+                    return results
+
                 searches = []
                 urls = []
+                search_results = []  # Structured search results
                 safe_tool_calls = []
                 for tool_call in tool_calls or []:
                     tool_name = tool_call.get("tool")
@@ -330,6 +354,12 @@ OUTPUT REQUIREMENTS:
                         plain_queries = _to_plain_list(raw_queries)
                         searches.extend(plain_queries)
                         safe_entry["args"] = {"queries": plain_queries}
+                        
+                        # Parse search results to extract structured data
+                        for query in plain_queries:
+                            parsed = _parse_search_results(str(result), query)
+                            search_results.extend(parsed)
+                        
                     elif tool_name == "web_page_reader":
                         raw_urls = args.get("urls", [])
                         plain_urls = _to_plain_list(raw_urls)
@@ -352,8 +382,9 @@ OUTPUT REQUIREMENTS:
                     "role": role_value,
                     "id": temp_id,
                     "has_web_tools": True,  # Mark that this was a research agent
-                    "web_searches": list(searches),  # Ensure plain list of strings
-                    "web_urls": list(urls),  # Ensure plain list of strings
+                    "web_searches": list(searches),  # List of search query strings
+                    "search_results": search_results,  # Structured [{title, url, snippet, query}]
+                    "pages_read": list(urls),  # URLs actually read with web_page_reader
                     "tool_calls": safe_tool_calls  # Sanitized tool call log
                 }
                 
