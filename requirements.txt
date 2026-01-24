@@ -18,3 +18,4 @@ ddgs
 beautifulsoup4
 aiohttp
 sseclient-py
+boto3

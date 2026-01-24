@@ -9,22 +9,24 @@ import google.generativeai as genai
 from .config import GOOGLE_API_KEY
 
 from .utils.gcs_utils import GCSUtils
+from .utils.r2_utils import R2Utils
+from typing import Union
 
 
 class ImageGenerator:
     """Generates images using Gemini and uploads them to GCS."""
     
-    def __init__(self, gcs_utils: GCSUtils, bucket_name: str, model_name: str, verbose: bool = False):
+    def __init__(self, storage_utils: Union[GCSUtils, R2Utils], bucket_name: str, model_name: str, verbose: bool = False):
         """
         Initialize ImageGenerator.
         
         Args:
-            gcs_utils: GCSUtils instance for uploading images
-            bucket_name: GCS bucket name for constructing public URLs
+            storage_utils: Utils instance for uploading images (GCS or R2)
+            bucket_name: Storage bucket name for constructing public URLs
             model_name: Gemini model name for image generation
             verbose: Enable verbose logging for debugging
         """
-        self.gcs_utils = gcs_utils
+        self.storage_utils = storage_utils
         self.bucket_name = bucket_name
         self.model_name = model_name
         self.verbose = verbose
@@ -359,14 +361,18 @@ class ImageGenerator:
             # Create file path with correct extension
             file_name = f"images/{session_id}/{slide_id}{file_ext}"
             
-            # Upload to GCS using BytesIO wrapper with correct content type
+            # Upload to storage
             file_data = io.BytesIO(image_bytes)
             # Reset file pointer to beginning
             file_data.seek(0)
-            gcs_path = self.gcs_utils.upload_file_to_gcs(file_name, file_data, content_type=content_type)
             
-            # Construct public URL
-            public_url = f"https://storage.googleapis.com/{self.bucket_name}/{file_name}"
+            # Use appropriate upload method based on storage util type
+            if hasattr(self.storage_utils, 'upload_file_to_r2'):
+                 public_url = self.storage_utils.upload_file_to_r2(file_name, file_data, content_type=content_type)
+            else:
+                self.storage_utils.upload_file_to_gcs(file_name, file_data, content_type=content_type)
+                # Construct public URL for GCS manually if not returned (GCS utils returns gs://)
+                public_url = f"https://storage.googleapis.com/{self.bucket_name}/{file_name}"
             
             print(f"[ImageGenerator] Successfully uploaded image to {public_url} (type: {content_type})")
             return public_url
@@ -473,17 +479,25 @@ class ImageGenerator:
                     # Create unique filename for each card
                     file_name = f"images/{session_id}/{slide_id}_card_{i+1}.png"
                     
-                    # Upload to GCS
+                    # Upload to storage
                     file_data = io.BytesIO(card_bytes)
                     file_data.seek(0)
-                    gcs_path = self.gcs_utils.upload_file_to_gcs(
-                        file_name,
-                        file_data,
-                        content_type="image/png"
-                    )
                     
-                    # Construct public URL
-                    public_url = f"https://storage.googleapis.com/{self.bucket_name}/{file_name}"
+                    if hasattr(self.storage_utils, 'upload_file_to_r2'):
+                         public_url = self.storage_utils.upload_file_to_r2(
+                            file_name,
+                            file_data,
+                            content_type="image/png"
+                        )
+                    else:
+                        self.storage_utils.upload_file_to_gcs(
+                            file_name,
+                            file_data,
+                            content_type="image/png"
+                        )
+                        # Construct public URL
+                        public_url = f"https://storage.googleapis.com/{self.bucket_name}/{file_name}"
+                        
                     card_urls.append(public_url)
                     
                     if self.verbose:
