@@ -6,12 +6,34 @@ Production-ready with robust JSON parsing and error recovery.
 """
 from typing import Dict, Any, List, Optional, AsyncGenerator
 import json
-import uuid
+import asyncio
 import traceback
 from .llm import GeminiProvider
 from .database import DatabaseManager
 from .image_generator import ImageGenerator
-from .utils.json_parser import extract_json_from_response, safe_json_loads, JSONParseError
+from .utils.json_parser import extract_json_from_response, JSONParseError
+from .style_presets import (
+    get_writing_style_description,
+    get_visual_style_description,
+    PRESET_WRITING_STYLES,
+    PRESET_VISUAL_STYLES
+)
+
+
+class SuggestionError(Exception):
+    """Raised when suggestions cannot be produced or parsed."""
+
+
+class DeliverableGenerationError(Exception):
+    """Raised when deliverable generation fails."""
+
+    def __init__(self, message: str, deliverable_id: Optional[str] = None):
+        super().__init__(message)
+        self.deliverable_id = deliverable_id
+
+
+class ImageGenerationError(Exception):
+    """Raised when image generation fails for any block."""
 
 
 # JSON Schema for structured output
@@ -24,7 +46,7 @@ SUGGESTIONS_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string"},
-                    "type": {"type": "string", "enum": ["document", "social", "presentation", "report"]},
+                    "type": {"type": "string", "enum": ["document", "presentation", "report", "instagram_carousel", "twitter_thread", "linkedin_post"]},
                     "description": {"type": "string"},
                     "estimated_blocks": {"type": "integer"},
                     "image_count": {"type": "integer"}
@@ -41,7 +63,7 @@ BLOCKS_SCHEMA = {
     "items": {
         "type": "object",
         "properties": {
-            "type": {"type": "string", "enum": ["heading", "text", "image", "quote", "divider", "code"]},
+            "type": {"type": "string", "enum": ["heading", "text", "image", "quote", "divider", "code", "thread_tweet", "linkedin_post", "instagram_post", "twitter_post"]},
             "order": {"type": "integer"},
             "content": {"type": "object"}
         },
@@ -53,107 +75,105 @@ BLOCKS_SCHEMA = {
 class BlockGenerator:
     """Generates block-based deliverables with optimized image generation."""
     
-    SUGGESTIONS_PROMPT = """You are a senior content strategist at a Fortune 500 company. Analyze this conversation and suggest 3-5 premium deliverables.
+    DOCUMENT_PROMPT = """You are a world-class content strategist and executive writer.
+    
+    TASK: Transform the conversation into a comprehensive document with 8-15 blocks.
+    
+    AVAILABLE BLOCK TYPES:
+    - heading: {level: 1-3, text: "Section Title", subtitle: "Optional subtitle"}
+    - text: {text: "Full paragraph (markdown supported)", format: "markdown"}
+    - list: {items: ["Item 1", "Item 2"], ordered: boolean}
+    - statistic: {value: "42%", label: "Growth", trend: "up|down", description: "Context"}
+    - callout: {type: "insight|attention|tip", title: "Title", text: "Content"}
+    - quote: {text: "Quote text", author: "Name", role: "Title"}
+    - table: {headers: ["Col1", "Col2"], rows: [["r1c1", "r1c2"]]}
+    - mermaid: {code: "graph TD...", title: "Diagram Title"}
+    - image: {prompt: "Detailed image prompt", style: "photorealistic|minimalist|editorial", alt: "Description"}
+    - divider: {}
+    
+    STRUCTURE: Start with heading, use varied blocks, include 2-4 strategic images.
+    TONE: Natural, insightful, professional. Avoid AI clichés like "delve" or "tapestry".
+    
+    OUTPUT: Return ONLY a JSON array of block objects.
+    [{"type": "heading", "order": 0, "content": {...}}, ...]
+    """
+    
+    SOCIAL_PROMPT = """You are a social media expert creating engaging posts.
+    
+    TASK: Transform the conversation into social media content.
+    
+    OUTPUT: Return ONLY a JSON array of block objects.
+    """
 
-DELIVERABLE TYPES:
-- document: Executive-level reports, strategic guides, comprehensive plans
-- social: High-impact visual narratives for LinkedIn, Instagram, or presentations
-- presentation: Board-ready slide decks with data visualization
-- report: Data-driven analysis with metrics and insights
+    INSTAGRAM_CAROUSEL_PROMPT = """You are an expert Instagram strategist creating a high-converting carousel.
 
-For EACH suggestion:
-- title: Compelling, specific title (not generic)
-- type: Match content to best format
-- description: Clear value proposition in 1-2 sentences
-- estimated_blocks: 8-12 for comprehensive coverage
-- image_count: 4 (our standard)
+    TASK: Create a 4-slide Instagram Carousel based on the session.
+    
+    STRUCTURE:
+    - Slide 1: Hook (Image + Caption)
+    - Slide 2: Value/Insight 1 (Image + Caption)
+    - Slide 3: Value/Insight 2 (Image + Caption)
+    - Slide 4: Offer/CTA (Image + Caption)
+    
+    IMPORTANT: You MUST generate exactly 4 image blocks, each followed by an instagram_post block (caption).
+    
+    AVAILABLE BLOCK TYPES:
+    - image: {prompt: "Visual description for the slide", style: "aesthetic|minimalist|bold", alt: "Slide visual"}
+    - instagram_post: {text: "Caption for this slide", hashtags: ["tag1"], emoji_line: "✨"}
+    
+    OUTPUT: Return ONLY a JSON array of block objects.
+    [
+        {"type": "image", "order": 0, "content": {"prompt": "Visual for hook", "style": "bold"}},
+        {"type": "instagram_post", "order": 1, "content": {"text": "Hook caption", "emoji_line": "🔥"}},
+        {"type": "image", "order": 2, "content": {"prompt": "Visual for insight 1", "style": "minimalist"}},
+        {"type": "instagram_post", "order": 3, "content": {"text": "Insight caption"}}
+        ... (continue for 4 slides)
+    ]
+    """
 
-QUALITY STANDARDS:
-- Titles should be specific and compelling (e.g., "Q4 Growth Strategy: 3 Levers for 40% Revenue Increase" not "Business Plan")
-- Descriptions should highlight unique insights from the conversation
-- Consider what a C-suite executive would find valuable
+    TWITTER_THREAD_PROMPT = """You are a Twitter/X ghostwriter creating a viral thread.
 
-Output valid JSON only:
-{
-  "suggestions": [
-    {
-      "title": "Market Entry Playbook: Southeast Asia Expansion",
-      "type": "document",
-      "description": "Step-by-step guide with regulatory requirements, partnership strategies, and 18-month timeline based on your discussion",
-      "estimated_blocks": 10,
-      "image_count": 4
-    }
-  ]
-}"""
+    TASK: Create a coherent thread of 5-8 tweets based on the session.
+    
+    STRUCTURE:
+    - Tweet 1: strong hook
+    - Tweet 2-N: Body content, 1 idea per tweet
+    - Final Tweet: Recap & CTA
+    
+    AVAILABLE BLOCK TYPES:
+    - twitter_post: {text: "Tweet content (max 280 chars)", thread_position: "1/5"}
+    - image: {prompt: "Visual for the hook", style: "minimalist"} (Use only 1 image for the first tweet)
+    
+    OUTPUT: Return ONLY a JSON array of block objects.
+    [
+        {"type": "image", "order": 0, "content": {"prompt": "Hook visual"}},
+        {"type": "twitter_post", "order": 1, "content": {"text": "Hook tweet...", "thread_position": "1/5"}},
+        {"type": "twitter_post", "order": 2, "content": {"text": "Point 1...", "thread_position": "2/5"}}
+    ]
+    """
 
-    BLOCK_PLANNING_PROMPT = """You are a world-class content designer creating a premium deliverable. Design a compelling block structure.
+    LINKEDIN_POST_PROMPT = """You are a LinkedIn thought leader.
 
-DESIGN PRINCIPLES:
-1. **Visual Hierarchy**: Start strong, build momentum, end with clear takeaways
-2. **Data Visualization**: Include charts and diagrams to illustrate key data points
-3. **Scanability**: Use varied block types so readers can skim and dive deep
-4. **Professional Polish**: Every element should feel intentional and valuable
-
-BLOCK TYPES (use variety for engagement):
-- heading: Section titles (content: {level: 1-3, text: "...", subtitle: "optional"})
-- text: Rich paragraphs with markdown (content: {text: "...", format: "markdown"})
-- list: Bullet or numbered lists (content: {items: ["..."], ordered: boolean})
-- statistic: Key metrics with context (content: {value: "85%", label: "Customer Retention", trend: "up", description: "YoY improvement"})
-- callout: Highlighted insights (content: {type: "insight"|"action"|"warning"|"tip", title: "...", text: "..."})
-- quote: Key quotes or testimonials (content: {text: "...", author: "...", role: "..."})
-- table: Comparison or data tables (content: {headers: ["..."], rows: [["..."]], caption: "..."})
-- chart: Data visualization (content: {type: "bar"|"line"|"pie"|"area", title: "...", data: [{name: "...", value: N}], xKey: "name", dataKeys: ["value"], caption: "..."})
-- mermaid: Diagrams and flowcharts (content: {code: "graph TD\\n  A-->B", title: "Process Flow"})
-- image: Strategic visuals (content: {prompt: "detailed description", style: "professional|creative|data-viz", alt: "..."})
-- divider: Section breaks (content: {})
-
-CHART DATA FORMAT EXAMPLES:
-- Bar/Line chart: {type: "bar", title: "Quarterly Revenue", data: [{"name": "Q1", "value": 120}, {"name": "Q2", "value": 150}], xKey: "name", dataKeys: ["value"]}
-- Multi-series: {type: "line", title: "Growth Trends", data: [{"month": "Jan", "revenue": 100, "users": 50}], xKey: "month", dataKeys: ["revenue", "users"]}
-- Pie chart: {type: "pie", title: "Market Share", data: [{"name": "Product A", "value": 45}, {"name": "Product B", "value": 30}], xKey: "name", dataKeys: ["value"]}
-
-MERMAID DIAGRAM EXAMPLES:
-- Flowchart: graph TD\\n  A[Start] --> B{Decision}\\n  B -->|Yes| C[Action]\\n  B -->|No| D[End]
-- Timeline: timeline\\n  title Project Timeline\\n  2024 : Planning\\n  2025 : Development
-- Sequence: sequenceDiagram\\n  Alice->>Bob: Hello
-
-STRUCTURE REQUIREMENTS:
-- 12-16 total blocks for comprehensive coverage
-- Include at least 1 chart block for data visualization
-- Include 1 mermaid diagram for process flows or relationships
-- Exactly 4 image blocks, strategically placed
-- Open with impact (statistic or compelling heading)
-- Include at least 1 callout with key insight
-- End with actionable takeaways
-
-IMAGE PROMPT QUALITY:
-Write detailed, specific image prompts. Bad: "business meeting". Good: "Modern glass boardroom with diverse executive team reviewing growth charts on large display, warm afternoon lighting, professional photography style"
-
-Output valid JSON array only:
-[
-  {"type": "statistic", "order": 0, "content": {"value": "47%", "label": "Market Opportunity", "trend": "up", "description": "Untapped potential in target segment"}},
-  {"type": "heading", "order": 1, "content": {"level": 1, "text": "Strategic Roadmap", "subtitle": "Capturing Market Share in 2025"}},
-  {"type": "chart", "order": 2, "content": {"type": "bar", "title": "Revenue by Quarter", "data": [{"name": "Q1", "value": 2.4}, {"name": "Q2", "value": 3.1}], "xKey": "name", "dataKeys": ["value"], "caption": "Values in millions USD"}},
-  {"type": "mermaid", "order": 3, "content": {"code": "graph LR\\n  A[Research] --> B[Strategy]\\n  B --> C[Execute]\\n  C --> D[Measure]", "title": "Implementation Process"}}
-]"""
-
-    CONTENT_WRITER_PROMPT = """You are an elite business writer crafting content for Fortune 500 executives. 
-
-WRITING STANDARDS:
-- Lead with insight, not setup
-- Use specific numbers and examples
-- Write in active voice
-- Be concise but comprehensive
-- Include actionable recommendations
-- Avoid jargon and buzzwords without substance
-
-FORMAT:
-- Use markdown for structure (##, **, -, etc.)
-- Break into digestible paragraphs (3-4 sentences max)
-- Bold key terms and metrics
-- Use bullet points for lists of 3+ items
-
-TONE: Professional, confident, data-informed, actionable"""
+    TASK: Create a professional, engagement-optimized LinkedIn post.
+    
+    STRUCTURE:
+    - Hook: Attention grabbing one-liner
+    - Body: Spaced out paragraphs, value-dense
+    - Takeaway: Bullet points
+    - CTA: Question or specific call to action
+    
+    AVAILABLE BLOCK TYPES:
+    - linkedin_post: {text: "Post content", section_type: "body"}
+    - image: {prompt: "Professional infographic or concept visualization", style: "professional"} (Include 1 image)
+    
+    OUTPUT: Return ONLY a JSON array of block objects.
+    [
+        {"type": "linkedin_post", "order": 0, "content": {"text": "Hook...", "section_type": "hook"}},
+        {"type": "image", "order": 1, "content": {"prompt": "Context visual", "style": "professional"}},
+        {"type": "linkedin_post", "order": 2, "content": {"text": "Main body...", "section_type": "body"}},
+        {"type": "linkedin_post", "order": 3, "content": {"text": "Takeaway...", "section_type": "cta"}}
+    ]
+    """
 
     def __init__(self, db_manager: DatabaseManager, llm_provider: GeminiProvider, image_service: ImageGenerator):
         """Initialize block generator."""
@@ -172,7 +192,7 @@ TONE: Professional, confident, data-informed, actionable"""
         # Get session context
         session = await self.db.get_session(session_id)
         if not session:
-            raise Exception("Session not found")
+            raise SuggestionError("Session not found")
         
         # Format conversation
         context = self._format_session_context(session)
@@ -182,14 +202,28 @@ TONE: Professional, confident, data-informed, actionable"""
         
         try:
             # Use generation config for JSON output
+            system_instruction = """You are an expert content strategist. Analyze the session and suggest 2-4 deliverable options.
+
+Suggestions should include a mix of:
+- "document": Comprehensive summaries or guides
+- "instagram_carousel": Visual stories (4 slides)
+- "twitter_thread": Viral threads (5-8 tweets)
+- "linkedin_post": Professional insights
+
+IMPORTANT: Output ONLY valid JSON matching this format:
+{"suggestions": [{"title": "...", "type": "document|instagram_carousel|twitter_thread|linkedin_post", "description": "...", "estimated_blocks": 8, "image_count": 4}]}
+"""
             response = await self.llm.generate(
                 prompt=prompt,
-                system_instruction=self.SUGGESTIONS_PROMPT + "\n\nIMPORTANT: Output ONLY valid JSON. No markdown code fences."
+                system_instruction=system_instruction
             )
             
-            # Use robust JSON parser
-            result = extract_json_from_response(response, expected_type=dict, fallback_value={"suggestions": []})
-            suggestions = result.get("suggestions", [])
+            try:
+                result = extract_json_from_response(response, expected_type=dict)
+            except JSONParseError as e:
+                raise SuggestionError("Unable to parse suggestions JSON") from e
+
+            suggestions = result.get("suggestions", []) if isinstance(result, dict) else []
             
             # Validate and normalize suggestions
             validated = []
@@ -203,45 +237,52 @@ TONE: Professional, confident, data-informed, actionable"""
                         "image_count": 4  # Always 4
                     })
             
-            # If no valid suggestions, create a default
             if not validated:
-                validated = self._get_default_suggestions(session)
+                raise SuggestionError("LLM returned no valid suggestions")
             
             # Cache the suggestions
             await self.db.cache_suggestions(session_id, validated)
             
             return validated
             
-        except JSONParseError as e:
-            print(f"[BlockGenerator] JSON parse error in suggest_deliverables: {e}")
-            print(f"[BlockGenerator] Raw response: {e.raw_response[:200]}...")
-            print(f"[BlockGenerator] Attempts: {e.attempts}")
-            # Return default suggestions on parse error
-            return self._get_default_suggestions(session)
         except Exception as e:
             print(f"[BlockGenerator] Error in suggest_deliverables: {e}")
             traceback.print_exc()
-            return self._get_default_suggestions(session)
+            if isinstance(e, SuggestionError):
+                raise
+            raise SuggestionError("Failed to generate suggestions") from e
     
-    def _get_default_suggestions(self, session: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Generate default suggestions when LLM parsing fails."""
-        goal = session.get("problem", "your conversation")[:50]
-        return [
-            {
-                "title": f"Summary Document: {goal}",
-                "type": "document",
-                "description": "A comprehensive summary of your discussion with key takeaways",
-                "estimated_blocks": 8,
-                "image_count": 4
-            },
-            {
-                "title": f"Social Media Story: {goal}",
-                "type": "social",
-                "description": "Visual story with 4 images perfect for social sharing",
-                "estimated_blocks": 8,
-                "image_count": 4
-            }
-        ]
+    async def _get_writing_style_description(self, user_id: str, style_id: Optional[str]) -> str:
+        """Fetch writing style description (preset or custom)."""
+        if not style_id:
+            return "Natural, clear writing style"
+        
+        # Check if it's a preset
+        if style_id in PRESET_WRITING_STYLES:
+            return get_writing_style_description(style_id)
+        
+        # Check if it's a custom style
+        style = await self.db.get_writing_style(user_id, style_id)
+        if style:
+            return style.get("description", "Natural, clear writing style")
+        
+        return "Natural, clear writing style"
+    
+    async def _get_visual_style_description(self, user_id: str, style_id: Optional[str]) -> str:
+        """Fetch visual style description (preset or custom)."""
+        if not style_id:
+            return "Professional, high-quality visual style"
+        
+        # Check if it's a preset
+        if style_id in PRESET_VISUAL_STYLES:
+            return get_visual_style_description(style_id)
+        
+        # Check if it's a custom style
+        style = await self.db.get_visual_style(user_id, style_id)
+        if style:
+            return style.get("description", "Professional, high-quality visual style")
+        
+        return "Professional, high-quality visual style"
     
     async def generate_deliverable(
         self,
@@ -249,274 +290,171 @@ TONE: Professional, confident, data-informed, actionable"""
         session_id: str,
         deliverable_type: str,
         title: str,
-        custom_prompt: Optional[str] = None
+        instruction: Optional[str] = None,
+        deliverable_id: Optional[str] = None,
+        writing_style_id: Optional[str] = None,
+        visual_style_id: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Generate complete deliverable with blocks.
         Yields progress events via SSE with robust error handling.
         """
-        deliverable_id = None
-        
+        deliverable_ref = deliverable_id
         try:
-            # Create deliverable with 'generating' status
-            deliverable_id = await self.db.create_deliverable(
-                user_id=user_id,
-                deliverable_type=deliverable_type,
-                title=title,
-                session_id=session_id,
-                status="generating"
-            )
-            
-            yield {"event": "created", "deliverable_id": deliverable_id}
-            
-            # Get session context
+            if not deliverable_ref:
+                deliverable_ref = await self.db.create_deliverable(
+                    user_id=user_id,
+                    deliverable_type=deliverable_type,
+                    title=title,
+                    session_id=session_id,
+                    status="generating"
+                )
+                yield {
+                    "event": "created",
+                    "deliverable_id": deliverable_ref,
+                    "title": title,
+                    "deliverable_type": deliverable_type
+                }
+
             session = await self.db.get_session(session_id)
             if not session:
-                raise Exception("Session not found")
-            
+                raise DeliverableGenerationError("Session not found", deliverable_ref)
+
             context = self._format_session_context(session)
-            
-            # Plan block structure
-            yield {"event": "planning", "message": "Planning content structure..."}
-            
-            planning_prompt = f"{self.BLOCK_PLANNING_PROMPT}\n\nSession context:\n{context}\n\nDeliverable type: {deliverable_type}\nTitle: {title}"
-            if custom_prompt:
-                planning_prompt += f"\nUser request: {custom_prompt}"
-            
-            blocks_json = await self.llm.generate(
-                prompt=planning_prompt,
-                system_instruction="You are a content structure expert. Output ONLY valid JSON array. No markdown code fences, no explanation."
+
+            writing_style_desc = await self._get_writing_style_description(user_id, writing_style_id)
+            visual_style_desc = await self._get_visual_style_description(user_id, visual_style_id)
+
+            yield {"event": "thinking", "message": "Drafting content..."}
+
+            if deliverable_type == "instagram_carousel":
+                base_prompt = self.INSTAGRAM_CAROUSEL_PROMPT
+            elif deliverable_type == "twitter_thread":
+                base_prompt = self.TWITTER_THREAD_PROMPT
+            elif deliverable_type == "linkedin_post":
+                base_prompt = self.LINKEDIN_POST_PROMPT
+            else:
+                base_prompt = self.DOCUMENT_PROMPT
+
+            prompt = f"""
+            {base_prompt}
+
+            DELIVERABLE DETAILS:
+            Title: {title}
+            Goal: {instruction or session.get("problem", "Create a helpful guide")}
+
+            STYLE GUIDELINES:
+            Writing Style: {writing_style_desc}
+            Visual Style for Images: {visual_style_desc}
+            IMPORTANT: For all image blocks, use the visual style description above when generating the 'style' field.
+
+            SESSION CONTEXT:
+            {context[:5000]}
+            """
+
+            response = await self.llm.generate(
+                prompt=prompt,
+                system_instruction="Output valid JSON array only. No markdown fences."
             )
-            
-            # Use robust JSON parser
+
             try:
-                blocks = extract_json_from_response(blocks_json, expected_type=list)
+                blocks_data = extract_json_from_response(response, expected_type=list)
             except JSONParseError as e:
-                print(f"[BlockGenerator] Failed to parse blocks: {e}")
-                print(f"[BlockGenerator] Raw response: {e.raw_response[:300]}...")
-                # Generate default blocks structure
-                blocks = self._get_default_blocks(deliverable_type, title)
-            
-            # Handle wrapped response {"blocks": [...]}
-            if isinstance(blocks, dict):
-                blocks = blocks.get("blocks", [])
-            
-            # Validate blocks have required fields
-            validated_blocks = []
-            for i, block in enumerate(blocks):
-                if isinstance(block, dict) and block.get("type"):
-                    validated_blocks.append({
-                        "type": block.get("type", "text"),
-                        "order": block.get("order", i),
-                        "content": block.get("content", {})
-                    })
-            
-            if not validated_blocks:
-                validated_blocks = self._get_default_blocks(deliverable_type, title)
-            
-            # Separate text and image blocks
-            # Note: We now have flexible types that are neither simple text nor image
-            image_blocks = [b for b in validated_blocks if b["type"] == "image"]
-            non_image_blocks = [b for b in validated_blocks if b["type"] != "image"]
-            
-            # Ensure exactly 4 image blocks
-            while len(image_blocks) < 4:
-                image_blocks.append({
-                    "type": "image",
-                    "order": len(non_image_blocks) + len(image_blocks),
-                    "content": {
-                        "prompt": f"Visual representation for {title}",
-                        "context": "Supporting visual content",
-                        "alt": f"Image for {title}"
-                    }
-                })
-            image_blocks = image_blocks[:4]  # Cap at 4
-            
-            # Generate non-image blocks first
-            yield {"event": "generating", "message": "Creating premium content..."}
-            
-            for block in non_image_blocks:
-                try:
-                    # Enrich text blocks that are placeholders
-                    if block["type"] == "text":
-                        text_content = block["content"].get("text", "")
-                        if not text_content or "..." in text_content or len(text_content) < 100:
-                            content_prompt = f"""Create content for this section of "{title}":
+                raise DeliverableGenerationError("Unable to parse generated blocks", deliverable_ref) from e
 
-SECTION CONTEXT: {text_content or 'Introduction/overview'}
-DELIVERABLE TYPE: {deliverable_type}
+            if not blocks_data:
+                raise DeliverableGenerationError("LLM returned no blocks", deliverable_ref)
 
-CONVERSATION CONTEXT:
-{context[:3000]}
+            image_blocks = []
 
-Write 2-4 paragraphs of substantive, actionable content. Include specific details, recommendations, or insights from the conversation. Use markdown formatting."""
-                            
-                            full_text = await self.llm.generate(
-                                prompt=content_prompt,
-                                system_instruction=self.CONTENT_WRITER_PROMPT
-                            )
-                            block["content"]["text"] = full_text
-                            block["content"]["format"] = "markdown"
-                    
-                    # Enrich list blocks if items are placeholders
-                    elif block["type"] == "list":
-                        items = block["content"].get("items", [])
-                        if not items or any("..." in str(item) for item in items):
-                            list_prompt = f"""Create a list for "{title}":
+            yield {"event": "generating", "message": "Content generated, saving..."}
 
-LIST CONTEXT: {block["content"].get("title", "Key points")}
-DELIVERABLE TYPE: {deliverable_type}
+            for i, block in enumerate(blocks_data):
+                if not isinstance(block, dict):
+                    raise DeliverableGenerationError("Block payload is not an object", deliverable_ref)
 
-CONVERSATION CONTEXT:
-{context[:2000]}
+                block_type = block.get("type", "text")
+                content = block.get("content", {})
+                order = block.get("order", i)
 
-Provide 4-7 specific, actionable items. Each item should be 1-2 sentences with concrete details."""
-                            
-                            list_response = await self.llm.generate(
-                                prompt=list_prompt,
-                                system_instruction="Output a JSON array of strings. Each string is one list item. Example: [\"First item with detail\", \"Second item\"]"
-                            )
-                            try:
-                                new_items = extract_json_from_response(list_response, expected_type=list, fallback_value=items)
-                                if new_items and isinstance(new_items, list):
-                                    block["content"]["items"] = new_items
-                            except:
-                                pass  # Keep original items
-                    
-                    # Enrich callout blocks
-                    elif block["type"] == "callout":
-                        callout_text = block["content"].get("text", "")
-                        if not callout_text or len(callout_text) < 30:
-                            callout_prompt = f"""Create a key insight callout for "{title}":
+                if block_type == "text" and isinstance(content, str):
+                    content = {"text": content, "format": "markdown"}
 
-CALLOUT TYPE: {block["content"].get("type", "insight")}
-TITLE: {block["content"].get("title", "Key Insight")}
+                block_id = await self.db.add_block(
+                    deliverable_id=deliverable_ref,
+                    block_type=block_type,
+                    content=content,
+                    order=order
+                )
 
-CONVERSATION CONTEXT:
-{context[:1500]}
+                yield {
+                    "event": "block_added",
+                    "block_id": block_id,
+                    "type": block_type,
+                    "content": content,
+                    "order": order
+                }
 
-Write 1-2 sentences highlighting the most important takeaway or action item."""
-                            
-                            callout_text = await self.llm.generate(
-                                prompt=callout_prompt,
-                                system_instruction="Write a concise, impactful insight. No preamble, just the insight text."
-                            )
-                            block["content"]["text"] = callout_text.strip()
+                if block_type == "image":
+                    image_blocks.append({"id": block_id, "content": content})
 
-                    # Add block to database
-                    block_id = await self.db.add_block(
-                        deliverable_id=deliverable_id,
-                        block_type=block["type"],
-                        content=block["content"],
-                        order=block["order"]
-                    )
-                    
-                    yield {
-                        "event": "block_added",
-                        "block_id": block_id,
-                        "type": block["type"],
-                        "content": block["content"],
-                        "order": block["order"]
-                    }
-                except Exception as block_error:
-                    print(f"[BlockGenerator] Error generating block: {block_error}")
-                    # Continue with other blocks
-            
-            # Generate images (exactly 4)
             if image_blocks:
-                yield {"event": "generating_images", "message": "Generating 4 images...", "count": len(image_blocks)}
-                
-                try:
-                    # Build combined prompt for all 4 images
-                    image_prompts = []
-                    for block in image_blocks[:4]:
-                        prompt = block["content"].get("prompt", "")
-                        img_context = block["content"].get("context", "")
-                        combined = f"{img_context}. {prompt}" if img_context else prompt
-                        image_prompts.append(combined)
-                    
-                    # Create master prompt for all images
-                    master_prompt = f"Create 4 distinct images for '{title}':\n\n"
-                    for i, prompt in enumerate(image_prompts, 1):
-                        master_prompt += f"{i}. {prompt}\n"
-                    
-                    # Generate all 4 images using template method
-                    generation_id = str(uuid.uuid4())[:8]
-                    card_urls = await self.image_service.generate_cards_from_template(
-                        prompt=master_prompt,
-                        session_id=user_id,
-                        slide_id=generation_id,
-                        num_cards=4
-                    )
-                    
-                    if card_urls and len(card_urls) > 0:
-                        # Add image blocks to database (as many as we got)
-                        for idx, (block, url) in enumerate(zip(image_blocks, card_urls)):
-                            content = {
-                                "url": url,
-                                "caption": block["content"].get("prompt", ""),
-                                "alt": block["content"].get("alt", f"Image {idx + 1}"),
-                                "width": 512,
-                                "height": 512
-                            }
-                            
-                            block_id = await self.db.add_block(
-                                deliverable_id=deliverable_id,
-                                block_type="image",
-                                content=content,
-                                order=block["order"]
-                            )
-                            
-                            yield {
-                                "event": "block_added",
-                                "block_id": block_id,
-                                "type": "image",
-                                "content": content,
-                                "order": block["order"]
-                            }
-                    else:
-                        yield {"event": "warning", "message": "Image generation unavailable, deliverable created without images"}
-                        
-                except Exception as img_error:
-                    print(f"[BlockGenerator] Image generation error: {img_error}")
-                    traceback.print_exc()
-                    yield {"event": "warning", "message": f"Image generation failed: {str(img_error)[:100]}"}
-            
-            # Update status to complete
-            await self.db.update_deliverable_status(deliverable_id, "complete")
-            
-            yield {"event": "complete", "deliverable_id": deliverable_id, "status": "complete"}
-            
+                if not self.image_service:
+                    raise ImageGenerationError("Image generation service unavailable")
+
+                yield {"event": "generating_images", "message": f"Creating {len(image_blocks)} visualizations...", "count": len(image_blocks)}
+
+                async def _gen_update(img_block):
+                    prompt_value = img_block["content"].get("prompt")
+                    style_value = visual_style_desc if visual_style_id else img_block["content"].get("style", "professional")
+                    if not prompt_value:
+                        raise ImageGenerationError("Image block missing prompt")
+
+                    full_prompt = f"{prompt_value}, {style_value} style, high quality"
+                    try:
+                        url = await self.image_service.generate_and_upload_image(
+                            prompt=full_prompt,
+                            session_id=session_id,
+                            slide_id=img_block["id"]
+                        )
+                    except Exception as exc:
+                        raise ImageGenerationError("Image generation failed") from exc
+
+                    if not url:
+                        raise ImageGenerationError("Image service returned empty URL")
+
+                    new_content = img_block["content"].copy()
+                    new_content["url"] = url
+                    await self.db.update_block(deliverable_ref, img_block["id"], new_content)
+
+                    return {
+                        "event": "block_updated",
+                        "block_id": img_block["id"],
+                        "content": new_content
+                    }
+
+                tasks = [_gen_update(ib) for ib in image_blocks]
+                results = await asyncio.gather(*tasks)
+
+                for res in results:
+                    yield res
+
+            await self.db.update_deliverable_status(deliverable_ref, "complete")
+            yield {"event": "complete", "deliverable_id": deliverable_ref, "status": "complete"}
+
         except Exception as e:
             print(f"[BlockGenerator] Fatal error in generate_deliverable: {e}")
             traceback.print_exc()
-            
-            # Update status to failed if we have a deliverable_id
-            if deliverable_id:
+
+            if deliverable_ref:
                 try:
-                    await self.db.update_deliverable_status(deliverable_id, "failed")
-                except:
+                    await self.db.update_deliverable_status(deliverable_ref, "failed")
+                except Exception:
                     pass
-            
-            yield {"event": "error", "message": str(e), "deliverable_id": deliverable_id}
-    
-    def _get_default_blocks(self, deliverable_type: str, title: str) -> List[Dict[str, Any]]:
-        """Generate default block structure when LLM parsing fails."""
-        blocks = [
-            {"type": "heading", "order": 0, "content": {"level": 1, "text": title}},
-            {"type": "text", "order": 1, "content": {"text": "Introduction and overview.", "format": "markdown"}},
-            {"type": "statistic", "order": 2, "content": {"value": "100%", "label": "Compatible", "description": "Works with existing system"}},
-            {"type": "image", "order": 3, "content": {"prompt": f"Opening visual for {title}", "context": "Introduction", "alt": "Introduction image"}},
-            {"type": "text", "order": 4, "content": {"text": "Key points and insights.", "format": "markdown"}},
-            {"type": "list", "order": 5, "content": {"ordered": False, "items": ["Scalable architecture", "Modular design", "Cost effective"]}},
-            {"type": "image", "order": 6, "content": {"prompt": f"Key concept visualization for {title}", "context": "Main content", "alt": "Key concept image"}},
-            {"type": "callout", "order": 7, "content": {"type": "info", "title": "Note", "text": "This structure is automatically generated as fallback."}},
-            {"type": "text", "order": 8, "content": {"text": "Details and implementation.", "format": "markdown"}},
-            {"type": "image", "order": 9, "content": {"prompt": f"Supporting visual for {title}", "context": "Details", "alt": "Detail image"}},
-            {"type": "text", "order": 10, "content": {"text": "Conclusion and next steps.", "format": "markdown"}},
-            {"type": "image", "order": 11, "content": {"prompt": f"Closing visual for {title}", "context": "Conclusion", "alt": "Conclusion image"}},
-        ]
-        return blocks
+
+            if isinstance(e, DeliverableGenerationError):
+                raise
+            raise DeliverableGenerationError(str(e), deliverable_ref) from e
     
     def _format_session_context(self, session: Dict[str, Any]) -> str:
 
@@ -534,3 +472,254 @@ Write 1-2 sentences highlighting the most important takeaway or action item."""
                 parts.append(f"Assistant: {slide['response'][:500]}")  # Truncate
         
         return "\n\n".join(parts)
+
+    async def regenerate_block(
+        self,
+        deliverable_id: str,
+        block_id: str,
+        session_id: str,
+        instruction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Regenerate a single block within a deliverable.
+        Returns the new block content.
+        """
+        # Get the existing block
+        block = await self.db.get_block(deliverable_id, block_id)
+        if not block:
+            raise Exception("Block not found")
+        
+        # Get session context
+        session = await self.db.get_session(session_id)
+        if not session:
+            raise Exception("Session not found")
+        
+        context = self._format_session_context(session)
+        block_type = block.get("type", "text")
+        
+        # Build regeneration prompt based on block type
+        regen_prompt = f"""Regenerate this {block_type} block for a deliverable.
+
+CURRENT BLOCK CONTENT:
+{json.dumps(block.get('content', {}), indent=2)}
+
+SESSION CONTEXT:
+{context[:3000]}
+
+{f"USER INSTRUCTION: {instruction}" if instruction else "Make it better, more insightful, and more engaging."}
+
+RULES:
+- Return ONLY valid JSON with the new content object
+- Keep the same block type structure
+- Make it more specific and valuable
+- If text block, use markdown formatting
+"""
+        
+        # Select appropriate persona based on block type
+        persona = "You are an expert content writer. Write with clarity, insight, and a natural human tone."
+        if block_type in ["statistic", "chart"]:
+            persona = "You are a data analyst. Present information clearly with meaningful context."
+        elif block_type in ["twitter_post", "linkedin_post", "instagram_post"]:
+            persona = "You are a social media expert. Write engaging, authentic content that resonates."
+        
+        response = await self.llm.generate(
+            prompt=regen_prompt,
+            system_instruction=persona + "\n\nWrite naturally. Avoid AI buzzwords. Output ONLY valid JSON.",
+            generation_config={"temperature": 0.85}
+        )
+        
+        try:
+            new_content = extract_json_from_response(response, expected_type=dict)
+        except JSONParseError as e:
+            raise DeliverableGenerationError("Unable to parse regenerated block", deliverable_id) from e
+
+        if not isinstance(new_content, dict) or not new_content:
+            raise DeliverableGenerationError("Regenerated block is empty", deliverable_id)
+
+        await self.db.update_block(deliverable_id, block_id, new_content)
+
+        return {
+            "block_id": block_id,
+            "type": block_type,
+            "content": new_content,
+            "order": block.get("order", 0)
+        }
+
+    def export_to_markdown(self, deliverable: Dict[str, Any]) -> str:
+        """Export deliverable blocks to markdown format."""
+        lines = []
+        title = deliverable.get("title", "Untitled")
+        lines.append(f"# {title}\n")
+        
+        for block in deliverable.get("blocks", []):
+            block_type = block.get("type", "")
+            content = block.get("content", {})
+            
+            if block_type == "heading":
+                level = content.get("level", 1)
+                prefix = "#" * min(level + 1, 6)  # +1 since title is h1
+                lines.append(f"{prefix} {content.get('text', '')}")
+                if content.get("subtitle"):
+                    lines.append(f"*{content.get('subtitle')}*")
+                lines.append("")
+                
+            elif block_type == "text":
+                lines.append(content.get("text", ""))
+                lines.append("")
+                
+            elif block_type == "list":
+                items = content.get("items", [])
+                ordered = content.get("ordered", False)
+                for i, item in enumerate(items):
+                    if ordered:
+                        lines.append(f"{i+1}. {item}")
+                    else:
+                        lines.append(f"- {item}")
+                lines.append("")
+                
+            elif block_type == "statistic":
+                lines.append(f"**{content.get('value', '')}** — {content.get('label', '')}")
+                if content.get("description"):
+                    lines.append(f"_{content.get('description')}_")
+                lines.append("")
+                
+            elif block_type == "callout":
+                callout_type = content.get("type", "info").upper()
+                title = content.get("title", "")
+                text = content.get("text", "")
+                lines.append(f"> **{callout_type}**: {title}")
+                lines.append(f"> {text}")
+                lines.append("")
+                
+            elif block_type == "quote":
+                lines.append(f'> "{content.get("text", "")}"')
+                author = content.get("author", "")
+                role = content.get("role", "")
+                if author:
+                    attribution = f"— {author}"
+                    if role:
+                        attribution += f", {role}"
+                    lines.append(f"> {attribution}")
+                lines.append("")
+                
+            elif block_type == "table":
+                headers = content.get("headers", [])
+                rows = content.get("rows", [])
+                if headers:
+                    lines.append("| " + " | ".join(headers) + " |")
+                    lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+                    for row in rows:
+                        lines.append("| " + " | ".join(str(cell) for cell in row) + " |")
+                lines.append("")
+                
+            elif block_type == "mermaid":
+                lines.append("```mermaid")
+                lines.append(content.get("code", ""))
+                lines.append("```")
+                lines.append("")
+                
+            elif block_type == "image":
+                alt = content.get("alt", "Image")
+                url = content.get("url", "")
+                if url:
+                    lines.append(f"![{alt}]({url})")
+                    if content.get("caption"):
+                        lines.append(f"*{content.get('caption')}*")
+                lines.append("")
+                
+            elif block_type == "divider":
+                lines.append("---")
+                lines.append("")
+                
+            elif block_type in ["thread_tweet", "twitter_post"]:
+                position = content.get("thread_position", "")
+                if position:
+                    lines.append(f"**Tweet {position}**")
+                lines.append(content.get("text", ""))
+                hashtags = content.get("hashtags", [])
+                if hashtags:
+                    lines.append(" ".join(f"#{tag}" for tag in hashtags))
+                lines.append("")
+                
+            elif block_type == "linkedin_post":
+                section = content.get("section_type", "")
+                if section:
+                    lines.append(f"**[{section.upper()}]**")
+                lines.append(content.get("text", ""))
+                lines.append("")
+                
+            elif block_type == "instagram_post":
+                emoji_line = content.get("emoji_line", "")
+                if emoji_line:
+                    lines.append(emoji_line)
+                lines.append(content.get("text", ""))
+                hashtags = content.get("hashtags", [])
+                if hashtags:
+                    lines.append("")
+                    lines.append(" ".join(f"#{tag}" for tag in hashtags))
+                lines.append("")
+        
+        return "\n".join(lines)
+
+    def export_to_text(self, deliverable: Dict[str, Any]) -> str:
+        """Export deliverable blocks to plain text format."""
+        lines = []
+        title = deliverable.get("title", "Untitled")
+        lines.append(title.upper())
+        lines.append("=" * len(title))
+        lines.append("")
+        
+        for block in deliverable.get("blocks", []):
+            block_type = block.get("type", "")
+            content = block.get("content", {})
+            
+            if block_type == "heading":
+                text = content.get("text", "")
+                lines.append(text)
+                lines.append("-" * len(text))
+                if content.get("subtitle"):
+                    lines.append(content.get("subtitle"))
+                lines.append("")
+                
+            elif block_type == "text":
+                # Strip markdown formatting for plain text
+                text = content.get("text", "")
+                # Simple markdown stripping
+                text = text.replace("**", "").replace("*", "").replace("`", "")
+                lines.append(text)
+                lines.append("")
+                
+            elif block_type == "list":
+                items = content.get("items", [])
+                for i, item in enumerate(items):
+                    lines.append(f"  • {item}")
+                lines.append("")
+                
+            elif block_type == "statistic":
+                lines.append(f"{content.get('value', '')} - {content.get('label', '')}")
+                if content.get("description"):
+                    lines.append(f"  ({content.get('description')})")
+                lines.append("")
+                
+            elif block_type == "callout":
+                lines.append(f"[{content.get('type', 'NOTE').upper()}] {content.get('title', '')}")
+                lines.append(f"  {content.get('text', '')}")
+                lines.append("")
+                
+            elif block_type == "quote":
+                lines.append(f'"{content.get("text", "")}"')
+                author = content.get("author", "")
+                if author:
+                    lines.append(f"  - {author}")
+                lines.append("")
+                
+            elif block_type in ["thread_tweet", "twitter_post", "linkedin_post", "instagram_post"]:
+                lines.append(content.get("text", ""))
+                lines.append("")
+                
+            elif block_type == "divider":
+                lines.append("-" * 40)
+                lines.append("")
+        
+        return "\n".join(lines)
+

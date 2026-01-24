@@ -1,4 +1,6 @@
+from fastapi import Depends, HTTPException
 from modular_agent.database import DatabaseManager
+from modular_agent.block_generator import BlockGenerator
 from api.session_manager import SessionManager
 import os
 
@@ -41,6 +43,12 @@ def get_llm_provider():
 
 def get_image_generator():
     if not image_generator:
-        raise Exception("ImageGenerator not initialized")
+        raise HTTPException(status_code=503, detail="Image generation service unavailable")
     return image_generator
 
+def get_block_generator(
+    db = Depends(get_db_manager),
+    llm = Depends(get_llm_provider),
+    image_sv = Depends(get_image_generator)
+):
+    return BlockGenerator(db, llm, image_sv)

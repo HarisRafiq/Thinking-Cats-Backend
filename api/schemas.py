@@ -1,9 +1,12 @@
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel
+from datetime import datetime
 
 class ChatRequest(BaseModel):
     problem: Optional[str] = None
     session_id: Optional[str] = None
+    writing_style_id: Optional[str] = None  # ID of writing style (preset or custom)
+    visual_style_id: Optional[str] = None   # ID of visual style (preset or custom)
 
 class MessageRequest(BaseModel):
     message: str
@@ -31,6 +34,30 @@ class UpdateUserStatusRequest(BaseModel):
 
 class UpdateUserTierRequest(BaseModel):
     tier: str
+
+# =====================
+# Style Preferences Schemas
+# =====================
+
+class StylePreference(BaseModel):
+    id: str
+    name: str
+    description: str
+    is_preset: bool
+    icon: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+class CreateStyleRequest(BaseModel):
+    name: str
+    description: str
+
+class UpdateStyleRequest(BaseModel):
+    name: str
+    description: str
+
+class UserPreferencesResponse(BaseModel):
+    writing_styles: List[StylePreference]
+    visual_styles: List[StylePreference]
 
 # =====================
 # Social Platform Optimization Schemas

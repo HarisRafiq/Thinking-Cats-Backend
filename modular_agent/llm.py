@@ -73,10 +73,11 @@ class GeminiProvider(LLMProvider):
     async def generate(
         self,
         prompt: Union[str, List[Any]],
-        system_instruction: Optional[str] = None
+        system_instruction: Optional[str] = None,
+        generation_config: Optional[Dict[str, Any]] = None
     ) -> str:
         """Simple async generate that returns just the text."""
-        model = self._get_model(tools=None, system_instruction=system_instruction)
+        model = self._get_model(tools=None, system_instruction=system_instruction, generation_config=generation_config)
         response = await model.generate_content_async(prompt)
         return response.text if response.text else ""
     

@@ -325,7 +325,7 @@ OUTPUT REQUIREMENTS:
                     import re
                     results = []
                     # Match pattern: "1. Title: Body (URL: url)"
-                    pattern = r'\d+\.\s*([^:]+):\s*(.+?)\s*\(URL:\s*([^\)]+)\)'
+                    pattern = r'\d+\.\s*([^:]+):\s*(.+?)\s*\(URL:\s*(https?://[^\s\)]+)\)'
                     matches = re.finditer(pattern, result_text)
                     for match in matches:
                         title = match.group(1).strip()

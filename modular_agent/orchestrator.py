@@ -731,7 +731,7 @@ class Orchestrator:
                 self.db_manager.update_session_status(self.session_id, "idle"),
                 "session status update (idle after execution)"
             )
-        
+ 
         return result
  
     async def _get_conversation_context(self, limit: int = 15) -> str:

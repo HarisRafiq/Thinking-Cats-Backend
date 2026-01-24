@@ -26,6 +26,16 @@ class DatabaseManager:
                 print(f"Failed to connect to MongoDB: {e}")
                 raise e
 
+    def _sanitize_data(self, data: Any) -> Any:
+        """Recursively remove bytes/binary data that cannot be JSON serialized."""
+        if isinstance(data, dict):
+            return {k: self._sanitize_data(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [self._sanitize_data(i) for i in data]
+        elif isinstance(data, bytes):
+            return "<binary data removed for serialization>"
+        return data
+
     async def create_user(self, user_data: Dict[str, Any]) -> str:
         """Creates a new user or updates existing one."""
         if self.db is None:
@@ -683,6 +693,7 @@ class DatabaseManager:
             "user_id": user_id,
             "content": "",
             "status": "draft",  # draft, generating, published
+            "publications": [], # List of publication records
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow()
         }
@@ -756,6 +767,28 @@ class DatabaseManager:
         result = await self.db.artifacts.update_one(
             {"_id": ObjectId(artifact_id)},
             {"$set": update}
+        )
+        return result.modified_count > 0
+
+    async def add_publication_record(self, artifact_id: str, platform: str, url: Optional[str] = None, status: str = "published", metadata: Dict[str, Any] = None) -> bool:
+        """Adds a publication record to the artifact."""
+        if self.db is None:
+            await self.connect()
+            
+        record = {
+            "platform": platform,
+            "url": url,
+            "status": status,
+            "published_at": datetime.utcnow(),
+            "metadata": metadata or {}
+        }
+        
+        result = await self.db.artifacts.update_one(
+            {"_id": ObjectId(artifact_id)},
+            {
+                "$push": {"publications": record},
+                "$set": {"updated_at": datetime.utcnow()}
+            }
         )
         return result.modified_count > 0
 
@@ -1248,23 +1281,41 @@ class DatabaseManager:
         
         return block["block_id"]
 
-    async def update_block(self, deliverable_id: str, block_id: str, content: Dict[str, Any]):
+    async def update_block(self, deliverable_id: str, block_id: str, content: Dict[str, Any]) -> bool:
         """Update specific block content."""
         if self.db is None:
             await self.connect()
         
         from bson import ObjectId
         
-        await self.db.deliverables.update_one(
+        result = await self.db.deliverables.update_one(
             {"_id": ObjectId(deliverable_id), "blocks.block_id": block_id},
             {
                 "$set": {
                     "blocks.$.content": content,
                     "blocks.$.metadata.updated_at": datetime.utcnow(),
+                    "blocks.$.metadata.ai_generated": False,  # Mark as manually edited
                     "updated_at": datetime.utcnow()
                 }
             }
         )
+        return result.modified_count > 0
+
+    async def get_block(self, deliverable_id: str, block_id: str) -> Optional[Dict[str, Any]]:
+        """Get a specific block from a deliverable."""
+        if self.db is None:
+            await self.connect()
+        
+        from bson import ObjectId
+        
+        deliverable = await self.db.deliverables.find_one(
+            {"_id": ObjectId(deliverable_id)},
+            {"blocks": {"$elemMatch": {"block_id": block_id}}}
+        )
+        
+        if deliverable and deliverable.get("blocks"):
+            return deliverable["blocks"][0]
+        return None
 
     async def get_deliverable(self, deliverable_id: str) -> Optional[Dict[str, Any]]:
         """Get deliverable with all blocks."""
@@ -1280,7 +1331,9 @@ class DatabaseManager:
             # Sort blocks by order
             if "blocks" in deliverable:
                 deliverable["blocks"].sort(key=lambda b: b.get("order", 0))
-        return deliverable
+            
+            return self._sanitize_data(deliverable)
+        return None
 
     async def get_user_deliverables(self, user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
         """Get all deliverables for a user."""
@@ -1296,7 +1349,7 @@ class DatabaseManager:
             if "blocks" in d:
                 d["blocks"].sort(key=lambda b: b.get("order", 0))
         
-        return deliverables
+        return self._sanitize_data(deliverables)
 
     async def delete_deliverable(self, deliverable_id: str):
         """Delete deliverable and all its blocks."""
@@ -1337,4 +1390,199 @@ class DatabaseManager:
         
         if session and "cached_suggestions" in session:
             return session["cached_suggestions"]
+        return None
+
+    # =====================
+    # USER PREFERENCES (STYLES)
+    # =====================
+
+    async def get_user_preferences(self, user_id: str) -> Dict[str, Any]:
+        """Get user's style preferences. Creates default structure if not exists."""
+        if self.db is None:
+            await self.connect()
+        
+        prefs = await self.db.user_preferences.find_one({"user_id": user_id})
+        
+        if not prefs:
+            # Create default preferences
+            default_prefs = {
+                "user_id": user_id,
+                "writing_styles": [],
+                "visual_styles": [],
+                "created_at": datetime.utcnow(),
+                "updated_at": datetime.utcnow()
+            }
+            await self.db.user_preferences.insert_one(default_prefs)
+            prefs = default_prefs
+        
+        # Convert ObjectId to string
+        if prefs and "_id" in prefs:
+            prefs["_id"] = str(prefs["_id"])
+        
+        return prefs
+
+    async def add_writing_style(self, user_id: str, name: str, description: str) -> str:
+        """Add a custom writing style to user preferences."""
+        if self.db is None:
+            await self.connect()
+        
+        # Ensure preferences exist
+        await self.get_user_preferences(user_id)
+        
+        # Generate unique ID for the style
+        style_id = str(ObjectId())
+        style = {
+            "id": style_id,
+            "name": name,
+            "description": description,
+            "is_preset": False,
+            "created_at": datetime.utcnow()
+        }
+        
+        await self.db.user_preferences.update_one(
+            {"user_id": user_id},
+            {
+                "$push": {"writing_styles": style},
+                "$set": {"updated_at": datetime.utcnow()}
+            }
+        )
+        
+        return style_id
+
+    async def add_visual_style(self, user_id: str, name: str, description: str) -> str:
+        """Add a custom visual style to user preferences."""
+        if self.db is None:
+            await self.connect()
+        
+        # Ensure preferences exist
+        await self.get_user_preferences(user_id)
+        
+        # Generate unique ID for the style
+        style_id = str(ObjectId())
+        style = {
+            "id": style_id,
+            "name": name,
+            "description": description,
+            "is_preset": False,
+            "created_at": datetime.utcnow()
+        }
+        
+        await self.db.user_preferences.update_one(
+            {"user_id": user_id},
+            {
+                "$push": {"visual_styles": style},
+                "$set": {"updated_at": datetime.utcnow()}
+            }
+        )
+        
+        return style_id
+
+    async def update_writing_style(self, user_id: str, style_id: str, name: str, description: str) -> bool:
+        """Update a custom writing style."""
+        if self.db is None:
+            await self.connect()
+        
+        result = await self.db.user_preferences.update_one(
+            {
+                "user_id": user_id,
+                "writing_styles.id": style_id,
+                "writing_styles.is_preset": False  # Only allow updating custom styles
+            },
+            {
+                "$set": {
+                    "writing_styles.$.name": name,
+                    "writing_styles.$.description": description,
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        
+        return result.modified_count > 0
+
+    async def update_visual_style(self, user_id: str, style_id: str, name: str, description: str) -> bool:
+        """Update a custom visual style."""
+        if self.db is None:
+            await self.connect()
+        
+        result = await self.db.user_preferences.update_one(
+            {
+                "user_id": user_id,
+                "visual_styles.id": style_id,
+                "visual_styles.is_preset": False  # Only allow updating custom styles
+            },
+            {
+                "$set": {
+                    "visual_styles.$.name": name,
+                    "visual_styles.$.description": description,
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        
+        return result.modified_count > 0
+
+    async def delete_writing_style(self, user_id: str, style_id: str) -> bool:
+        """Delete a custom writing style."""
+        if self.db is None:
+            await self.connect()
+        
+        result = await self.db.user_preferences.update_one(
+            {"user_id": user_id},
+            {
+                "$pull": {
+                    "writing_styles": {
+                        "id": style_id,
+                        "is_preset": False  # Only allow deleting custom styles
+                    }
+                },
+                "$set": {"updated_at": datetime.utcnow()}
+            }
+        )
+        
+        return result.modified_count > 0
+
+    async def delete_visual_style(self, user_id: str, style_id: str) -> bool:
+        """Delete a custom visual style."""
+        if self.db is None:
+            await self.connect()
+        
+        result = await self.db.user_preferences.update_one(
+            {"user_id": user_id},
+            {
+                "$pull": {
+                    "visual_styles": {
+                        "id": style_id,
+                        "is_preset": False  # Only allow deleting custom styles
+                    }
+                },
+                "$set": {"updated_at": datetime.utcnow()}
+            }
+        )
+        
+        return result.modified_count > 0
+
+    async def get_writing_style(self, user_id: str, style_id: str) -> Optional[Dict[str, Any]]:
+        """Get a specific writing style by ID."""
+        if self.db is None:
+            await self.connect()
+        
+        prefs = await self.get_user_preferences(user_id)
+        
+        for style in prefs.get("writing_styles", []):
+            if style.get("id") == style_id:
+                return style
+        
+        return None
+
+    async def get_visual_style(self, user_id: str, style_id: str) -> Optional[Dict[str, Any]]:
+        """Get a specific visual style by ID."""
+        if self.db is None:
+            await self.connect()
+        
+        prefs = await self.get_user_preferences(user_id)
+        
+        for style in prefs.get("visual_styles", []):
+            if style.get("id") == style_id:
+                return style
+        
         return None

@@ -47,10 +47,18 @@ async def start_chat(
              
     else:
         # Create new session in MongoDB first to get the _id
-        session_id = await db_manager.create_session({
+        session_data = {
             "problem": request.problem,
             "model": model
-        }, user_id=str(current_user["_id"]))
+        }
+        
+        # Add style preferences if provided
+        if request.writing_style_id:
+            session_data["writing_style_id"] = request.writing_style_id
+        if request.visual_style_id:
+            session_data["visual_style_id"] = request.visual_style_id
+        
+        session_id = await db_manager.create_session(session_data, user_id=str(current_user["_id"]))
         
     # Start new session via manager
     # Note: start_new_session handles both new and resuming (if we treat resuming as starting worker)
