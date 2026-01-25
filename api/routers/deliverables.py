@@ -176,7 +176,7 @@ async def update_block(
     if not block:
         raise HTTPException(status_code=404, detail="Block not found")
     
-    success = await db_manager.update_block(deliverable_id, block_id, request.content)
+    success = await db_manager.update_block(deliverable_id, block_id, request.content, instruction="Manual Edit")
     if not success:
         raise HTTPException(status_code=500, detail="Failed to update block")
     

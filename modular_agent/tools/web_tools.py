@@ -14,7 +14,8 @@ def web_search(queries: List[str]) -> str:
     Returns:
         A string containing the search results for each query.
     """
-    results_summary = []
+    import json
+    results_data = []
     
     try:
         with DDGS() as ddgs:
@@ -23,22 +24,27 @@ def web_search(queries: List[str]) -> str:
                 # Try with max_results=5 for better coverage
                 results = list(ddgs.text(query, max_results=5))
                 
-                query_summary = f"Results for '{query}':\n"
-                if not results:
-                    query_summary += "No results found. Try a simpler or different search query.\n"
-                else:
-                    for i, res in enumerate(results, 1):
-                        query_summary += f"{i}. {res['title']}: {res['body']} (URL: {res['href']})\n"
+                query_results = []
+                if results:
+                    for res in results:
+                        query_results.append({
+                            "title": res.get('title', ''),
+                            "snippet": res.get('body', ''),
+                            "url": res.get('href', '')
+                        })
                 
-                results_summary.append(query_summary)
+                results_data.append({
+                    "query": query,
+                    "results": query_results
+                })
                 
     except Exception as e:
         error_msg = f"Error performing web search: {str(e)}"
         print(f"[Web Tools] {error_msg}")
         traceback.print_exc()
-        return error_msg
+        return json.dumps({"error": error_msg})
 
-    return "\n".join(results_summary)
+    return json.dumps(results_data, indent=2)
 
 def web_page_reader(urls: List[str]) -> str:
     """

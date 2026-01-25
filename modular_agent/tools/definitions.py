@@ -246,20 +246,19 @@ class ToolDefinitions:
             research_prompt = f"""{question}
 
 RESEARCH INSTRUCTIONS (TOOLS Available):
-- web_search first to gather recent, factual information.
-- web_page_reader on at least the top 2-4 promising URLs from search results.
-- Do NOT fabricate links. Only cite URLs you actually read via web_page_reader.
-- If a tool fails, try an alternative query once; if still failing, state what failed.
+- web_search: Use first to gather recent, factual information.
+- web_page_reader: Use on at least the top 2-4 promising URLs from search results to get deep content.
 
 PROCESS:
 1) Call web_search with 2-4 targeted queries.
 2) Pick the best URLs and call web_page_reader to extract details.
-3) Summarize findings with evidence; list URLs consulted.
-4) If no useful sources found, explicitly say "No reliable sources found".
+3) Synthesize findings into a clear, factual summary.
+4) If no useful sources found after retrying, explicitly state "Missing Information".
 
 OUTPUT REQUIREMENTS:
-- Provide a concise summary of findings.
-- Include a bullet list of URLs actually read.
+- **DO NOT** list sources, URLs, or a bibliography at the end. The system automatically captures and displays the sources you used.
+- Provide a "Key Findings" section.
+- If specific data is missing, mention it clearly in a "Missing Information" section.
 - Keep it factual; avoid speculation."""
 
             # Emit tool execution start event
@@ -318,12 +317,48 @@ OUTPUT REQUIREMENTS:
 
                 def _parse_search_results(result_text: str, query: str):
                     """
-                    Parse web_search result text to extract structured data.
-                    Format: "1. Title: Body snippet (URL: https://example.com)"
-                    Returns list of {title, url, snippet, query}
+                    Parse web_search result text (now JSON) to extract structured data.
+                    Compatible with both new JSON format and legacy text format (fallback).
                     """
-                    import re
+                    import json
                     results = []
+                    
+                    # 1. Try JSON parsing (New Format)
+                    try:
+                        data = json.loads(result_text)
+                        
+                        # Handle list of query results (standard output)
+                        if isinstance(data, list):
+                            for item in data:
+                                # Match item to query if possible, or include all if generic
+                                item_query = item.get("query", "")
+                                # If direct query match or if this result block belongs to our query
+                                if item_query == query or (not item_query and len(data) == 1):
+                                    for res in item.get("results", []):
+                                        results.append({
+                                            "title": res.get("title", ""),
+                                            "url": res.get("url", ""),
+                                            "snippet": res.get("snippet", ""),
+                                            "query": query
+                                        })
+                            return results
+                            
+                        # Handle error object or single result object
+                        if isinstance(data, dict):
+                            if "results" in data: # Single query result structure
+                                for res in data.get("results", []):
+                                    results.append({
+                                        "title": res.get("title", ""),
+                                        "url": res.get("url", ""),
+                                        "snippet": res.get("snippet", ""),
+                                        "query": query
+                                    })
+                                return results
+                    except json.JSONDecodeError:
+                        pass # Fallback to regex
+                    
+                    # 2. Legacy Regex Parsing (Fallback)
+                    import re
                     # Match pattern: "1. Title: Body (URL: url)"
                     pattern = r'\d+\.\s*([^:]+):\s*(.+?)\s*\(URL:\s*(https?://[^\s\)]+)\)'
                     matches = re.finditer(pattern, result_text)

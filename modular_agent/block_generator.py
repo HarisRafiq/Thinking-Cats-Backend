@@ -425,7 +425,7 @@ IMPORTANT: Output ONLY valid JSON matching this format:
 
                     new_content = img_block["content"].copy()
                     new_content["url"] = url
-                    await self.db.update_block(deliverable_ref, img_block["id"], new_content)
+                    await self.db.update_block(deliverable_ref, img_block["id"], new_content, instruction="Initial Generation")
 
                     return {
                         "event": "block_updated",
@@ -536,7 +536,36 @@ RULES:
         if not isinstance(new_content, dict) or not new_content:
             raise DeliverableGenerationError("Regenerated block is empty", deliverable_id)
 
-        await self.db.update_block(deliverable_id, block_id, new_content)
+        # SPECIAL HANDLING FOR IMAGE BLOCKS
+        if block_type == "image":
+            # If it's an image block, we must actually generate the image using the new prompt
+            prompt_value = new_content.get("prompt")
+            if prompt_value:
+                # Get visual style if available
+                visual_style_id = session.get("visual_style_id")
+                visual_style_desc = await self._get_visual_style_description(session.get("user_id"), visual_style_id)
+                style_value = visual_style_desc if visual_style_id else new_content.get("style", "professional")
+                
+                full_prompt = f"{prompt_value}, {style_value} style, high quality"
+                try:
+                    # We use the block_id with a timestamp to force a new URL (bypassing cache)
+                    import time
+                    timestamp = int(time.time())
+                    url = await self.image_service.generate_and_upload_image(
+                        prompt=full_prompt,
+                        session_id=session_id,
+                        slide_id=f"{block_id}_{timestamp}"
+                    )
+                    if url:
+                        new_content["url"] = url
+                except Exception as e:
+                    print(f"[BlockGenerator] Failed to regenerate image file: {e}")
+                    # We won't fail the whole request, but the URL might be old or missing
+                    # If we want to keep the old URL as fallback:
+                    if "url" not in new_content and "url" in block.get("content", {}):
+                         new_content["url"] = block["content"]["url"]
+
+        await self.db.update_block(deliverable_id, block_id, new_content, instruction=instruction)
 
         return {
             "block_id": block_id,

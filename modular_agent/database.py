@@ -1281,13 +1281,27 @@ class DatabaseManager:
         
         return block["block_id"]
 
-    async def update_block(self, deliverable_id: str, block_id: str, content: Dict[str, Any]) -> bool:
-        """Update specific block content."""
+    async def update_block(self, deliverable_id: str, block_id: str, content: Dict[str, Any], instruction: Optional[str] = None) -> bool:
+        """
+        Update specific block content and save history.
+        """
         if self.db is None:
             await self.connect()
         
         from bson import ObjectId
         
+        # 1. Get current block to save to history
+        current_block = await self.get_block(deliverable_id, block_id)
+        if not current_block:
+            return False
+            
+        history_entry = {
+            "content": current_block.get("content"),
+            "timestamp": datetime.utcnow(),
+            "instruction": instruction
+        }
+        
+        # 2. Update with history push
         result = await self.db.deliverables.update_one(
             {"_id": ObjectId(deliverable_id), "blocks.block_id": block_id},
             {
@@ -1296,6 +1310,12 @@ class DatabaseManager:
                     "blocks.$.metadata.updated_at": datetime.utcnow(),
                     "blocks.$.metadata.ai_generated": False,  # Mark as manually edited
                     "updated_at": datetime.utcnow()
+                },
+                "$push": {
+                    "blocks.$.history": {
+                        "$each": [history_entry],
+                        "$position": 0  # Add to beginning of array
+                    }
                 }
             }
         )
